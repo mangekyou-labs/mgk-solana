@@ -3,6 +3,8 @@
 ## Introduction
 
 Solana Perpetuals protocol is an open-source implementation of a non-custodial decentralized exchange that supports leveraged trading in a variety of assets.
+
+```
 npx ts-node src/cli.ts -k <ADMIN_WALLET> get-pools
 npx ts-node src/cli.ts -k <ADMIN_WALLET> get-custodies <POOL_NAME>
 ```
