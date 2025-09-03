@@ -1,0 +1,19 @@
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+perpetuals = "E4digHpb1shbPFxdQTd6D6tnDnNYznrnNPoduHDtEn9H"
+
+[programs.devnet]
+perpetuals = "E4digHpb1shbPFxdQTd6D6tnDnNYznrnNPoduHDtEn9H"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 programs/perpetuals/tests/anchor/*.ts"
