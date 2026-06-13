@@ -1,0 +1,8 @@
+# Cargo configuration for Percolator BPF builds
+
+# Only use sbf target when explicitly building for BPF
+# For normal builds and tests, use default target
+
+[target.bpfel-unknown-none]
+# Use sbpf-linker when building for BPF target
+linker = "sbpf-linker"
