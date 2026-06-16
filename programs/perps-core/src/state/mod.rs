@@ -1,4 +1,5 @@
 pub mod batch;
+pub mod funding;
 pub mod instrument;
 pub mod mark_price;
 pub mod order;
