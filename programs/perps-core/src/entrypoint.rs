@@ -461,20 +461,26 @@ fn process_close_committing_inner(program_id: &Pubkey, accounts: &[AccountInfo],
 
 /// Clear a batch by invoking the matcher program (M6 6i.2).
 ///
+/// M7 7.6: account list extended to include per-batch instrument and
+/// portfolio accounts so Core can pre-compute per-user notional caps
+/// (D2: `cap = portfolio.free_collateral * instrument.max_leverage`).
+///
 /// Accounts:
 /// 0. [writable] Batch PDA
 /// 1. [writable] Book account (matcher-owned, `["book", instrument_id_le]`)
 /// 2. [writable] Results account
 /// 3. [] Matcher program
 /// 4. [] Registry
-///    5..5+C. [] Commitment accounts (C = num_commitments)
+///    5..5+I. [] Instrument accounts (I = num_instruments, M7 7.6)
+///    5+I..5+I+C. [] Commitment accounts (C = num_commitments)
+///    5+I+C..5+I+C+P. [] Portfolio accounts (P = num_portfolios, M7 7.6)
 ///
-/// Data: num_commitments(2)
+/// Data (M7 7.6): num_commitments(2) + num_instruments(2) + num_portfolios(2)
 fn process_clear_batch_inner(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     if accounts.len() < 6 {
         return Err(ProgramError::NotEnoughAccountKeys);
     }
-    if data.len() < 2 {
+    if data.len() < 6 {
         return Err(ProgramError::InvalidInstructionData);
     }
 
@@ -485,7 +491,13 @@ fn process_clear_batch_inner(program_id: &Pubkey, accounts: &[AccountInfo], data
     let registry_account = &accounts[4];
 
     let num_commitments = u16::from_le_bytes(data[0..2].try_into().unwrap()) as usize;
-    let commitment_accounts = &accounts[5..5 + num_commitments];
+    let num_instruments = u16::from_le_bytes(data[2..4].try_into().unwrap()) as usize;
+    let num_portfolios = u16::from_le_bytes(data[4..6].try_into().unwrap()) as usize;
+
+    let instrument_accounts = &accounts[5..5 + num_instruments];
+    let commitment_accounts = &accounts[5 + num_instruments..5 + num_instruments + num_commitments];
+    let portfolio_accounts = &accounts
+        [5 + num_instruments + num_commitments..5 + num_instruments + num_commitments + num_portfolios];
 
     validate_owner(batch_account, program_id)?;
     validate_writable(batch_account)?;
@@ -498,7 +510,9 @@ fn process_clear_batch_inner(program_id: &Pubkey, accounts: &[AccountInfo], data
         results_account,
         matcher_program,
         registry_account,
+        instrument_accounts,
         commitment_accounts,
+        portfolio_accounts,
     )
 }
 

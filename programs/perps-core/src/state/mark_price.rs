@@ -20,7 +20,7 @@
 //! (no transition zone) and produces a clear audit trail (the mark
 //! either came from the book or from the oracle, never a blend).
 
-use mgk_perps_matcher::state::book::OrderBook;
+use percolator_common::book::{BookLevel, OrderBook};
 
 /// Walk one side of the book until `target_qty` contracts have been
 /// accumulated, then return the price at the level that crossed the
@@ -35,7 +35,7 @@ use mgk_perps_matcher::state::book::OrderBook;
 /// price I could get for whatever depth exists" — the caller is expected
 /// to detect insufficient depth and fall back to oracle.
 pub fn sweep_book_side(
-    levels: &[mgk_perps_matcher::state::book::BookLevel],
+    levels: &[BookLevel],
     ascending: bool,
     target_qty: u64,
 ) -> Option<i64> {
@@ -163,7 +163,7 @@ pub fn compute_mark_price(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mgk_perps_matcher::state::book::{BookLevel, NULL_OFFSET};
+    use percolator_common::book::{BookLevel, NULL_OFFSET};
 
     /// Helper: build a `BookLevel` with the given price and qty.
     fn level(price: i64, total_qty: u64) -> BookLevel {

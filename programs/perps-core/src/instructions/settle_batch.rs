@@ -9,7 +9,7 @@ use crate::state::mark_price::sweep_book_side;
 use crate::state::portfolio::Portfolio;
 use crate::state::registry::Registry;
 use crate::state::vault::Vault;
-use mgk_perps_matcher::state::book::OrderBook;
+use percolator_common::book::OrderBook;
 use percolator_common::{math::calculate_funding_payment, PercolatorError};
 use pinocchio::{
     account_info::AccountInfo, msg, program_error::ProgramError, pubkey::Pubkey,
@@ -483,7 +483,7 @@ pub fn process_settle_batch(
     //    matcher's program id + the instrument's id. Refuse to read
     //    from a book that isn't the matcher's PDA for this instrument —
     //    protects against a malicious keeper passing a random book.
-    let (expected_book_pda, _book_bump) = mgk_perps_matcher::state::book::book_pda(
+    let (expected_book_pda, _book_bump) = percolator_common::book::book_pda(
         matcher_program.key(),
         instrument.instrument_id,
     );
@@ -496,10 +496,10 @@ pub fn process_settle_batch(
     //    `OrderBook` header (the level arrays), not the resting[] array.
     //    We deserialize the full `OrderBook` struct from the start of the
     //    account data — it's `#[repr(C)]` so a raw cast is safe.
-    let book: mgk_perps_matcher::state::book::OrderBook = unsafe {
+    let book: OrderBook = unsafe {
         core::ptr::read_unaligned(
             book_account.borrow_data_unchecked().as_ptr()
-                as *const mgk_perps_matcher::state::book::OrderBook,
+                as *const OrderBook,
         )
     };
 
@@ -540,6 +540,22 @@ pub fn process_settle_batch(
             &mut *(portfolio_account.borrow_mut_data_unchecked().as_ptr() as *mut Portfolio)
         };
         apply_funding_to_portfolio(portfolio, instrument_id_for_funding, post_funding_cum);
+    }
+
+    // M7 7.6 (decision D2): post-hoc margin check. After all fills +
+    // funding are applied, flag any underwater portfolios for the
+    // keeper. Fills are NOT reverted (per D2) — the existing
+    // `LiquidateUser` instruction handles liquidation in a separate
+    // transaction and already enforces `health >= 0 → reject`. This
+    // check is purely observational: it makes underwater portfolios
+    // visible to off-chain monitors without changing the batch outcome.
+    for portfolio_account in portfolio_accounts.iter() {
+        let portfolio = unsafe {
+            &*(portfolio_account.borrow_data_unchecked().as_ptr() as *const Portfolio)
+        };
+        if portfolio.needs_liquidation() {
+            msg!("Warning: portfolio underwater post-settle, eligible for liquidation");
+        }
     }
 
     // Increment batch counter in registry
@@ -987,7 +1003,7 @@ mod tests {
 
     use crate::state::instrument::Instrument;
     use crate::state::portfolio::{Position, MAX_INSTRUMENTS, MAX_POSITIONS};
-    use mgk_perps_matcher::state::book::{BookLevel, OrderBook, NULL_OFFSET};
+    use percolator_common::book::{BookLevel, OrderBook, NULL_OFFSET};
 
     fn empty_book() -> OrderBook {
         // An OrderBook is `#[repr(C)]` with a fixed size; for unit tests

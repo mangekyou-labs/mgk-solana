@@ -1,46 +1,19 @@
 use super::order::{LimitOrder, Side};
 use pinocchio::{program_error::ProgramError, pubkey::Pubkey};
 
-/// Maximum number of price levels per side of the book (design L892)
-pub const MAX_LEVELS: usize = 64;
-/// Maximum resting orders at a single price level (design L893)
-pub const MAX_ORDERS_PER_LEVEL: usize = 16;
+// Re-export so existing `mgk_perps_matcher::state::book::OrderBook` paths
+// continue to resolve. The canonical definition lives in
+// `percolator-common::book` so other programs (notably perps-core) can
+// read the book PDA without taking a Rust crate dependency on perps-matcher
+// (which would cause a duplicate `panic_handler` at link time).
+pub use percolator_common::book::{BookLevel, OrderBook, MAX_LEVELS, MAX_ORDERS_PER_LEVEL, NULL_OFFSET};
+
 /// Total maximum resting orders in the book (bids + asks).
 ///
 /// Sized for a single batch: 64 incoming orders each potentially creating one
 /// resting order, plus book already populated from prior batches. Generous
 /// for MVP — book capacity limits are enforced at placement time.
 pub const MAX_RESTING_ORDERS: usize = 256;
-/// Sentinel "no link" offset for end of a FIFO chain.
-pub const NULL_OFFSET: u32 = u32::MAX;
-
-/// Persistent order book for a single instrument (design L333-344)
-///
-/// PDA: `["book", instrument_id]`
-/// Lives in Matching Engine account space, survives across batches.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OrderBook {
-    pub instrument_id: u16,
-    pub best_bid: i64,
-    pub best_ask: i64,
-    pub bid_count: u32,
-    pub ask_count: u32,
-    pub next_order_id: u64,
-    pub last_update_slot: u64,
-    pub bids: [BookLevel; MAX_LEVELS],
-    pub asks: [BookLevel; MAX_LEVELS],
-}
-
-/// A price level on one side of the book (design L346-351)
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BookLevel {
-    pub price: i64,
-    pub total_qty: u64,
-    pub order_count: u16,
-    pub first_order_offset: u32,
-}
 
 /// A resting order on the book (design L353-364)
 #[repr(C)]

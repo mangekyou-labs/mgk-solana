@@ -1,7 +1,8 @@
 use crate::state::{
-    cancel_resting_by_id, clob_match_with_risk, compute_clearing, default_risk_check,
-    deserialize_book_state, modify_resting_qty, separate_priority_queues, serialize_book_state,
-    shuffle_orders, FillReceipt, LimitOrder, OrderType, Side, MAX_FILLS_PER_BATCH, MAX_ORDERS,
+    cancel_resting_by_id, clob_match_with_caps, clob_match_with_risk, compute_clearing,
+    default_risk_check, deserialize_book_state, modify_resting_qty, separate_priority_queues,
+    serialize_book_state, shuffle_orders, FillReceipt, LimitOrder, OrderType, Side,
+    MAX_FILLS_PER_BATCH, MAX_ORDERS,
 };
 use pinocchio::{
     account_info::AccountInfo, msg, program_error::ProgramError, pubkey::Pubkey, ProgramResult,
@@ -312,6 +313,8 @@ pub const MAX_RESULTS_SIZE: usize = 2 + MAX_FILLS_PER_BATCH * BYTES_PER_FILL;
 
 /// Per-order wire size for ClearAndMatch (same as ComputeClearing in 6g).
 const CLEAR_ORDER_BYTES: usize = 53;
+/// Bytes per user cap in the M7 7.6 cap section: user(32) + max_notional(16) = 48.
+const CLEAR_CAP_BYTES: usize = 48;
 
 /// `ClearAndMatch` (M6 6i.2): full CLOB pipeline against a persistent book.
 ///
@@ -319,11 +322,14 @@ const CLEAR_ORDER_BYTES: usize = 53;
 /// 0. `[writable]` Book account (matcher-owned, `["book", instrument_id_le]`)
 /// 1. `[writable]` Results account (core-owned, receives fills)
 ///
-/// Data:
+/// Data (M7 7.6 added the `num_caps` + caps section for risk-callback wiring):
 /// - close_slot: u64 (8) — used as the Fisher-Yates shuffle seed
 /// - num_orders: u16 (2)
-/// - For each order (53 bytes): side(1) + price(8) + qty(8) + user(32) +
-///   order_type(1) + instrument_id(2) + reduce_only(1)
+/// - num_caps: u16 (2) — number of per-user notional caps (M7 7.6, D2);
+///   zero = no cap (default risk check)
+/// - caps[num_caps]: each 48 bytes — `user(32) + max_notional(16)` little-endian
+/// - orders[num_orders]: each 53 bytes — side(1) + price(8) + qty(8) +
+///   user(32) + order_type(1) + instrument_id(2) + reduce_only(1)
 ///
 /// Results account layout:
 /// - num_fills: u16 (2)
@@ -349,8 +355,8 @@ pub fn process_clear_and_match(
         return Err(ProgramError::IllegalOwner);
     }
 
-    // Header: close_slot(8) + num_orders(2)
-    if data.len() < 10 {
+    // Header: close_slot(8) + num_orders(2) + num_caps(2)
+    if data.len() < 12 {
         msg!("Error: ClearAndMatch data too short for header");
         return Err(ProgramError::InvalidInstructionData);
     }
@@ -364,15 +370,48 @@ pub fn process_clear_and_match(
             .try_into()
             .map_err(|_| ProgramError::InvalidInstructionData)?,
     ) as usize;
+    let num_caps = u16::from_le_bytes(
+        data[10..12]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    ) as usize;
+
     if num_orders == 0 || num_orders > MAX_ORDERS {
         msg!("Error: ClearAndMatch num_orders out of range");
         return Err(ProgramError::InvalidInstructionData);
     }
-    let expected_len = 10 + num_orders * CLEAR_ORDER_BYTES;
+
+    let caps_offset = 12usize;
+    let orders_offset = caps_offset + num_caps * CLEAR_CAP_BYTES;
+    let expected_len = orders_offset + num_orders * CLEAR_ORDER_BYTES;
     if data.len() < expected_len {
-        msg!("Error: ClearAndMatch data too short for orders");
+        msg!("Error: ClearAndMatch data too short for caps + orders");
         return Err(ProgramError::InvalidInstructionData);
     }
+
+    // Parse caps into a stack-allocated array. Caps are bounded by
+    // num_caps, which itself is bounded by MAX_ORDERS (= 64). The cap
+    // array is only used during this call (it's passed by reference into
+    // clob_match_with_caps), so the stack allocation is fine.
+    let mut caps: [(Pubkey, u128); MAX_ORDERS] = [(Pubkey::default(), 0u128); MAX_ORDERS];
+    if num_caps > MAX_ORDERS {
+        msg!("Error: ClearAndMatch num_caps exceeds MAX_ORDERS");
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    for (i, cap_slot) in caps.iter_mut().enumerate().take(num_caps) {
+        let off = caps_offset + i * CLEAR_CAP_BYTES;
+        let user = Pubkey::from(
+            <[u8; 32]>::try_from(&data[off..off + 32])
+                .map_err(|_| ProgramError::InvalidInstructionData)?,
+        );
+        let cap = u128::from_le_bytes(
+            data[off + 32..off + 48]
+                .try_into()
+                .map_err(|_| ProgramError::InvalidInstructionData)?,
+        );
+        *cap_slot = (user, cap);
+    }
+    let caps_slice = &caps[..num_caps];
 
     // Deserialize orders onto the stack.
     let mut orders = [LimitOrder {
@@ -387,7 +426,7 @@ pub fn process_clear_and_match(
     }; MAX_ORDERS];
 
     for (i, slot) in orders.iter_mut().take(num_orders).enumerate() {
-        let offset = 10 + i * CLEAR_ORDER_BYTES;
+        let offset = orders_offset + i * CLEAR_ORDER_BYTES;
         let side = match Side::from_u8(data[offset]) {
             Some(s) => s,
             None => {
@@ -432,8 +471,14 @@ pub fn process_clear_and_match(
     separate_priority_queues(&orders[..num_orders], &mut queues);
 
     // 3. Deserialize the persistent book, run CLOB match (6d), serialize back.
+    // M7 7.6: if caps were provided, use the cap-aware risk check (D2);
+    // otherwise fall back to the default always-passing check.
     let mut state = deserialize_book_state(&book_account.try_borrow_data()?)?;
-    let result = clob_match_with_risk(&mut state, &queues, default_risk_check);
+    let result = if num_caps > 0 {
+        clob_match_with_caps(&mut state, &queues, caps_slice)
+    } else {
+        clob_match_with_risk(&mut state, &queues, default_risk_check)
+    };
     serialize_book_state(&state, &mut book_account.try_borrow_mut_data()?)?;
 
     // 4. Write fills to the results account.

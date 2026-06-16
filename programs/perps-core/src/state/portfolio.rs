@@ -55,6 +55,15 @@ impl Portfolio {
         self.health = self.equity - self.mm as i128;
     }
 
+    /// Returns `true` if the portfolio is underwater (`health < 0`) and
+    /// should be liquidated. M7 7.6 (decision D2): after all fills in a
+    /// batch are applied, `SettleBatch` calls this to flag eligible
+    /// portfolios for the keeper; the actual liquidation is a separate
+    /// `LiquidateUser` transaction (which already enforces `health >= 0`).
+    pub fn needs_liquidation(&self) -> bool {
+        self.health < 0
+    }
+
     pub fn find_position(&self, instrument_id: u16) -> Option<(usize, &Position)> {
         for i in 0..self.positions_len as usize {
             if self.positions[i].instrument_id == instrument_id {
@@ -119,6 +128,39 @@ mod tests {
         p.recalc_margin();
         assert_eq!(p.free_collateral, 900);
         assert_eq!(p.health, 950);
+    }
+
+    #[test]
+    fn test_needs_liquidation_healthy_portfolio() {
+        let mut p = Portfolio::new(Pubkey::default());
+        p.equity = 1000;
+        p.mm = 50;
+        p.recalc_margin();
+        assert_eq!(p.health, 950);
+        assert!(!p.needs_liquidation());
+    }
+
+    #[test]
+    fn test_needs_liquidation_underwater_portfolio() {
+        // M7 7.6 (D2): post-hoc check. equity < mm → health < 0 → liquidate.
+        let mut p = Portfolio::new(Pubkey::default());
+        p.equity = 40;
+        p.mm = 50;
+        p.recalc_margin();
+        assert_eq!(p.health, -10);
+        assert!(p.needs_liquidation());
+    }
+
+    #[test]
+    fn test_needs_liquidation_at_boundary() {
+        // health == 0 is the boundary: still NOT eligible for liquidation
+        // (LiquidateUser rejects health >= 0). M7 7.6 uses strict `< 0`.
+        let mut p = Portfolio::new(Pubkey::default());
+        p.equity = 50;
+        p.mm = 50;
+        p.recalc_margin();
+        assert_eq!(p.health, 0);
+        assert!(!p.needs_liquidation());
     }
 
     #[test]

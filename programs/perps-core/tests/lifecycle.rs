@@ -13,7 +13,7 @@
 //! `sha2`-backed impl).
 
 use mgk_perps_core::state::{Batch, Commitment, Portfolio, Vault};
-use mgk_perps_matcher::state::book::book_account_size;
+use percolator_common::book::book_header_size;
 #[allow(deprecated)]
 use solana_program_test::ProgramTest;
 #[allow(deprecated)]
@@ -119,7 +119,7 @@ fn program_test_with_pdas() -> (ProgramTest, TestPdas) {
     pt.add_account(vault_pda, Account::new(1_000_000, VAULT_SIZE, &CORE_ID));
     pt.add_account(
         book_pda,
-        Account::new(1_000_000, book_account_size(), &MATCHER_ID),
+        Account::new(1_000_000, book_header_size(), &MATCHER_ID),
     );
 
     let pdas = TestPdas {
@@ -307,12 +307,21 @@ fn build_close_committing_data() -> Vec<u8> {
 }
 
 /// `ClearBatch` (disc 7) — accounts: [writable] batch, [writable] book,
-/// [writable] results, matcher, registry, then C commitment accounts.
-/// Data: num_commitments(2) (post-disc).
+/// [writable] results, matcher, registry, then I instrument accounts,
+/// then C commitment accounts, then P portfolio accounts. (M7 7.6 added
+/// I + P for the per-user notional cap computation.)
+/// Data (M7 7.6): num_commitments(2) + num_instruments(2) + num_portfolios(2)
+/// (post-disc).
 #[allow(dead_code)]
-fn build_clear_batch_data(num_commitments: u16) -> Vec<u8> {
-    let mut data = vec![0u8; 2];
+fn build_clear_batch_data(
+    num_commitments: u16,
+    num_instruments: u16,
+    num_portfolios: u16,
+) -> Vec<u8> {
+    let mut data = vec![0u8; 6];
     data[0..2].copy_from_slice(&num_commitments.to_le_bytes());
+    data[2..4].copy_from_slice(&num_instruments.to_le_bytes());
+    data[4..6].copy_from_slice(&num_portfolios.to_le_bytes());
     data
 }
 
@@ -756,7 +765,9 @@ async fn test_e2e_full_lifecycle_with_fill() {
 
     // ------------------------------------------------------------------
     // 8. ClearBatch: CPI to matcher's ClearAndMatch.  Both commitments
-    //    are passed; book account is passed (matcher-owned).
+    //    are passed; book account is passed (matcher-owned). M7 7.6:
+    //    also pass the instrument + both portfolio accounts so Core can
+    //    compute per-user notional caps.
     // ------------------------------------------------------------------
     let clear_ix = Instruction {
         program_id: CORE_ID,
@@ -766,10 +777,13 @@ async fn test_e2e_full_lifecycle_with_fill() {
             AccountMeta::new(results_pda, false),
             AccountMeta::new_readonly(MATCHER_ID, false),
             AccountMeta::new(pdas.registry, false),
+            AccountMeta::new_readonly(pdas.instrument, false), // M7 7.6
             AccountMeta::new(maker_pdas.commitment, false),
             AccountMeta::new(taker_pdas.commitment, false),
+            AccountMeta::new(maker_pdas.portfolio, false), // M7 7.6
+            AccountMeta::new(taker_pdas.portfolio, false), // M7 7.6
         ],
-        data: with_disc(7, build_clear_batch_data(2)),
+        data: with_disc(7, build_clear_batch_data(2, 1, 2)),
     };
     submit(&mut ctx, clear_ix, &[]).await.unwrap();
 
@@ -1122,6 +1136,7 @@ async fn test_e2e_gtc_rests_then_matches_next_batch() {
     submit(&mut ctx, close_b1, &[]).await.unwrap();
 
     // Clear batch 1: only maker's commitment; book should accept the GTC.
+    // M7 7.6: also pass instrument + maker portfolio for cap computation.
     let clear_b1 = Instruction {
         program_id: CORE_ID,
         accounts: vec![
@@ -1130,9 +1145,11 @@ async fn test_e2e_gtc_rests_then_matches_next_batch() {
             AccountMeta::new(results_pda_b1, false),
             AccountMeta::new_readonly(MATCHER_ID, false),
             AccountMeta::new(pdas.registry, false),
+            AccountMeta::new_readonly(pdas.instrument, false), // M7 7.6
             AccountMeta::new(maker_pdas_b1.commitment, false),
+            AccountMeta::new_readonly(maker_pdas_b1.portfolio, false), // M7 7.6
         ],
-        data: with_disc(7, build_clear_batch_data(1)),
+        data: with_disc(7, build_clear_batch_data(1, 1, 1)),
     };
     submit(&mut ctx, clear_b1, &[]).await.unwrap();
 
@@ -1263,6 +1280,7 @@ async fn test_e2e_gtc_rests_then_matches_next_batch() {
     };
     submit(&mut ctx, close_b2, &[]).await.unwrap();
 
+    // M7 7.6: also pass instrument + taker portfolio for cap computation.
     let clear_b2 = Instruction {
         program_id: CORE_ID,
         accounts: vec![
@@ -1271,9 +1289,11 @@ async fn test_e2e_gtc_rests_then_matches_next_batch() {
             AccountMeta::new(results_pda_b2, false),
             AccountMeta::new_readonly(MATCHER_ID, false),
             AccountMeta::new(pdas.registry, false),
+            AccountMeta::new_readonly(pdas.instrument, false), // M7 7.6
             AccountMeta::new(taker_pdas_b2.commitment, false),
+            AccountMeta::new_readonly(taker_pdas_b2.portfolio, false), // M7 7.6
         ],
-        data: with_disc(7, build_clear_batch_data(1)),
+        data: with_disc(7, build_clear_batch_data(1, 1, 1)),
     };
     submit(&mut ctx, clear_b2, &[]).await.unwrap();
 
@@ -1591,6 +1611,7 @@ async fn test_e2e_settle_creates_next_batch_pda() {
     };
     submit(&mut ctx, close_b1, &[]).await.unwrap();
 
+    // M7 7.6: also pass instrument + user portfolio for cap computation.
     let clear_b1 = Instruction {
         program_id: CORE_ID,
         accounts: vec![
@@ -1599,9 +1620,11 @@ async fn test_e2e_settle_creates_next_batch_pda() {
             AccountMeta::new(results_pda_b1, false),
             AccountMeta::new_readonly(MATCHER_ID, false),
             AccountMeta::new(pdas.registry, false),
+            AccountMeta::new_readonly(pdas.instrument, false), // M7 7.6
             AccountMeta::new(user_pdas_b1.commitment, false),
+            AccountMeta::new_readonly(user_pdas_b1.portfolio, false), // M7 7.6
         ],
-        data: with_disc(7, build_clear_batch_data(1)),
+        data: with_disc(7, build_clear_batch_data(1, 1, 1)),
     };
     submit(&mut ctx, clear_b1, &[]).await.unwrap();
 
@@ -1781,6 +1804,7 @@ async fn test_e2e_settle_creates_next_batch_pda() {
     };
     submit(&mut ctx, close_b2, &[]).await.unwrap();
 
+    // M7 7.6: also pass instrument + user portfolio for cap computation.
     let clear_b2 = Instruction {
         program_id: CORE_ID,
         accounts: vec![
@@ -1789,9 +1813,11 @@ async fn test_e2e_settle_creates_next_batch_pda() {
             AccountMeta::new(results_pda_b2, false),
             AccountMeta::new_readonly(MATCHER_ID, false),
             AccountMeta::new(pdas.registry, false),
+            AccountMeta::new_readonly(pdas.instrument, false), // M7 7.6
             AccountMeta::new(user_pdas_b2.commitment, false),
+            AccountMeta::new_readonly(user_pdas_b2.portfolio, false), // M7 7.6
         ],
-        data: with_disc(7, build_clear_batch_data(1)),
+        data: with_disc(7, build_clear_batch_data(1, 1, 1)),
     };
     submit(&mut ctx, clear_b2, &[]).await.unwrap();
 

@@ -11,6 +11,7 @@ doctest = false
 [dependencies]
 pinocchio = { workspace = true }
 pinocchio-pubkey = { workspace = true }
+percolator-common = { path = "../common" }
 
 [features]
 default = []

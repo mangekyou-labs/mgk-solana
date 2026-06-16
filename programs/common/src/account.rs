@@ -122,7 +122,8 @@ pub unsafe fn borrow_account_data<T>(account: &AccountInfo) -> Result<&T, Percol
 
     // Check alignment
     let ptr = data.as_ptr();
-    if !(ptr as usize).is_multiple_of(core::mem::align_of::<T>()) {
+    #[allow(clippy::manual_is_multiple_of)] // `is_multiple_of` not stable in SBF toolchain (Rust <1.87)
+    if (ptr as usize) % core::mem::align_of::<T>() != 0 {
         return Err(PercolatorError::InvalidAccount);
     }
 
@@ -154,7 +155,8 @@ pub unsafe fn borrow_account_data_mut<T>(account: &AccountInfo) -> Result<&mut T
 
     // Check alignment
     let ptr = data.as_ptr();
-    if !(ptr as usize).is_multiple_of(core::mem::align_of::<T>()) {
+    #[allow(clippy::manual_is_multiple_of)] // `is_multiple_of` not stable in SBF toolchain (Rust <1.87)
+    if (ptr as usize) % core::mem::align_of::<T>() != 0 {
         return Err(PercolatorError::InvalidAccount);
     }
 

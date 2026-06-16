@@ -108,11 +108,20 @@ pub fn clob_match(state: &mut BookState, queues: &PartitionedOrders) -> MatchRes
 /// fill context. If it returns `RiskDecision::Cancel`, the current order's
 /// walk stops and its remaining qty is treated as unfilled (GTC may still
 /// rest the remainder; IOC and Market drop it).
-pub fn clob_match_with_risk(
+///
+/// Generic over `F: Fn(&RiskContext) -> RiskDecision` so callers can pass
+/// either a `RiskCheckFn` (fn pointer) or a closure that captures state —
+/// the cap-aware path in `clob_match_with_caps` uses a closure that holds
+/// a reference to a per-batch caps table. fn pointers satisfy the `Fn`
+/// bound, so existing callers passing `default_risk_check` are unchanged.
+pub fn clob_match_with_risk<F>(
     state: &mut BookState,
     queues: &PartitionedOrders,
-    risk_check: RiskCheckFn,
-) -> MatchResult {
+    risk_check: F,
+) -> MatchResult
+where
+    F: Fn(&RiskContext) -> RiskDecision,
+{
     let mut result = MatchResult::new();
 
     // 1. Cancels.
@@ -128,9 +137,9 @@ pub fn clob_match_with_risk(
     // 3. Regulars.
     for order in queues.regulars() {
         match order.order_type {
-            OrderType::LimitGTC => process_gtc(state, order, &mut result, risk_check),
-            OrderType::LimitIOC => process_ioc(state, order, &mut result, risk_check),
-            OrderType::Market => process_market(state, order, &mut result, risk_check),
+            OrderType::LimitGTC => process_gtc(state, order, &mut result, &risk_check),
+            OrderType::LimitIOC => process_ioc(state, order, &mut result, &risk_check),
+            OrderType::Market => process_market(state, order, &mut result, &risk_check),
             _ => {
                 // Defensive: should not appear in the regular queue.
             }
@@ -138,6 +147,45 @@ pub fn clob_match_with_risk(
     }
 
     result
+}
+
+/// Cap-aware risk check for M7 7.6 (decision D2).
+///
+/// Looks up `ctx.user` in the `caps` slice (linear scan; max 64 unique
+/// users per batch per M6 `MAX_ORDERS`). Returns `Cancel` if
+/// `ctx.cumulative_notional > cap` for that user. If the user is not in
+/// the caps table, returns `Continue` (no cap applied — preserves backward
+/// compat for users Core doesn't have a portfolio account for, e.g. system
+/// or fee-rebate flows).
+///
+/// Soft guard only — the hard margin check happens post-hoc in Core
+/// `SettleBatch` (decision D2: defense in depth).
+pub fn capped_risk_check(ctx: &RiskContext, caps: &[(Pubkey, u128)]) -> RiskDecision {
+    for (user, cap) in caps {
+        if *user == ctx.user {
+            if ctx.cumulative_notional > *cap {
+                return RiskDecision::Cancel;
+            }
+            return RiskDecision::Continue;
+        }
+    }
+    RiskDecision::Continue
+}
+
+/// Run the CLOB matching algorithm with a per-user notional cap (M7 7.6
+/// decision D2). Core pre-computes `max_notional_cap` per user from
+/// `portfolio.free_collateral * instrument.max_leverage` and passes the
+/// table in the CPI data; the matcher cancels the remainder of any order
+/// whose cumulative notional exceeds the cap for its user.
+///
+/// The `caps` slice is a `(user, max_notional)` array — see the D2
+/// implementation note: `user(32) + max_notional(16) = 48 bytes` per user.
+pub fn clob_match_with_caps(
+    state: &mut BookState,
+    queues: &PartitionedOrders,
+    caps: &[(Pubkey, u128)],
+) -> MatchResult {
+    clob_match_with_risk(state, queues, |ctx| capped_risk_check(ctx, caps))
 }
 
 /// Cancel: remove a single resting order by id, or all resting orders for
@@ -191,12 +239,14 @@ fn process_alo(state: &mut BookState, alo: &LimitOrder, result: &mut MatchResult
 }
 
 /// LimitGTC: if aggressive, walk the book and rest the unfilled remainder.
-fn process_gtc(
+fn process_gtc<F>(
     state: &mut BookState,
     order: &LimitOrder,
     result: &mut MatchResult,
-    risk_check: RiskCheckFn,
-) {
+    risk_check: &F,
+) where
+    F: Fn(&RiskContext) -> RiskDecision,
+{
     let remaining = walk_against_book(state, order, result, risk_check);
     if remaining > 0 && !state.is_full() {
         // Rest the unfilled portion at the order's limit price.
@@ -209,23 +259,27 @@ fn process_gtc(
 }
 
 /// LimitIOC: walk the book; whatever doesn't fill is cancelled (not rested).
-fn process_ioc(
+fn process_ioc<F>(
     state: &mut BookState,
     order: &LimitOrder,
     result: &mut MatchResult,
-    risk_check: RiskCheckFn,
-) {
+    risk_check: &F,
+) where
+    F: Fn(&RiskContext) -> RiskDecision,
+{
     let _ = walk_against_book(state, order, result, risk_check);
 }
 
 /// Market: walk the book with no price limit. Anything not filled remains
 /// un-rested (market orders don't rest).
-fn process_market(
+fn process_market<F>(
     state: &mut BookState,
     order: &LimitOrder,
     result: &mut MatchResult,
-    risk_check: RiskCheckFn,
-) {
+    risk_check: &F,
+) where
+    F: Fn(&RiskContext) -> RiskDecision,
+{
     let _ = walk_against_book(state, order, result, risk_check);
 }
 
@@ -253,12 +307,15 @@ fn would_cross_spread(state: &BookState, order: &LimitOrder) -> bool {
 /// After every fill, `risk_check` is invoked. If it returns
 /// `RiskDecision::Cancel`, the walk stops and the unfilled remainder is
 /// returned (caller decides whether to rest, e.g. for GTC).
-fn walk_against_book(
+fn walk_against_book<F>(
     state: &mut BookState,
     order: &LimitOrder,
     result: &mut MatchResult,
-    risk_check: RiskCheckFn,
-) -> u64 {
+    risk_check: &F,
+) -> u64
+where
+    F: Fn(&RiskContext) -> RiskDecision,
+{
     let mut remaining = order.qty;
     if remaining == 0 {
         return 0;
@@ -784,6 +841,194 @@ mod tests {
         // clob_match uses default_risk_check — should fill completely.
         let result = clob_match(&mut state, &queues);
         assert_eq!(result.risk_breach_cancellations, 0);
+        let taker_qty: u64 = result.fills[..result.fill_count]
+            .iter()
+            .filter(|f| !f.is_maker)
+            .map(|f| f.filled_qty)
+            .sum();
+        assert_eq!(taker_qty, 10);
+    }
+
+    // ========================================================================
+    // M7 7.6 cap-aware risk check tests (decision D2)
+    // ========================================================================
+
+    fn make_ctx(user_id: u8, cumulative_notional: u128) -> RiskContext {
+        RiskContext {
+            user: Pubkey::from([user_id; 32]),
+            instrument_id: 0,
+            cumulative_filled_qty: 0,
+            cumulative_notional,
+            this_fill_qty: 0,
+            this_fill_price: 0,
+        }
+    }
+
+    #[test]
+    fn test_capped_risk_check_under_cap_continues() {
+        let caps = [(Pubkey::from([1u8; 32]), 500u128)];
+        let ctx = make_ctx(1, 499);
+        assert_eq!(
+            capped_risk_check(&ctx, &caps),
+            RiskDecision::Continue
+        );
+    }
+
+    #[test]
+    fn test_capped_risk_check_at_cap_continues() {
+        // Cap is "breach when cumulative > cap" (strict >). At the cap the
+        // check still continues — only crossing the cap cancels.
+        let caps = [(Pubkey::from([1u8; 32]), 500u128)];
+        let ctx = make_ctx(1, 500);
+        assert_eq!(
+            capped_risk_check(&ctx, &caps),
+            RiskDecision::Continue
+        );
+    }
+
+    #[test]
+    fn test_capped_risk_check_over_cap_cancels() {
+        let caps = [(Pubkey::from([1u8; 32]), 500u128)];
+        let ctx = make_ctx(1, 501);
+        assert_eq!(capped_risk_check(&ctx, &caps), RiskDecision::Cancel);
+    }
+
+    #[test]
+    fn test_capped_risk_check_user_not_in_table_continues() {
+        // User 99 is not in the caps table — no cap applies, so continue.
+        let caps = [(Pubkey::from([1u8; 32]), 500u128)];
+        let ctx = make_ctx(99, 1_000_000);
+        assert_eq!(
+            capped_risk_check(&ctx, &caps),
+            RiskDecision::Continue
+        );
+    }
+
+    #[test]
+    fn test_capped_risk_check_empty_caps_continues() {
+        let caps: [(Pubkey, u128); 0] = [];
+        let ctx = make_ctx(1, u128::MAX);
+        assert_eq!(
+            capped_risk_check(&ctx, &caps),
+            RiskDecision::Continue
+        );
+    }
+
+    #[test]
+    fn test_capped_risk_check_multiple_users_lookup() {
+        // Linear scan must find the correct cap for the requested user.
+        let caps = [
+            (Pubkey::from([1u8; 32]), 100u128),
+            (Pubkey::from([2u8; 32]), 200u128),
+            (Pubkey::from([3u8; 32]), 300u128),
+        ];
+        // User 2 has cap 200 — 201 should cancel.
+        let ctx = make_ctx(2, 201);
+        assert_eq!(capped_risk_check(&ctx, &caps), RiskDecision::Cancel);
+        // User 2 has cap 200 — 200 should continue (strict >).
+        let ctx = make_ctx(2, 200);
+        assert_eq!(
+            capped_risk_check(&ctx, &caps),
+            RiskDecision::Continue
+        );
+    }
+
+    #[test]
+    fn test_clob_match_with_caps_under_cap_full_fill() {
+        // Buyer has cap of 1_000_000. Two asks at 100 with 5 qty each.
+        // Total fill is 10 * 100 = 1_000 notional — under the cap.
+        let mut state = BookState::new();
+        place_resting(
+            &mut state,
+            &make_order(1, Side::Sell, 100, 5, OrderType::LimitGTC),
+        )
+        .unwrap();
+        place_resting(
+            &mut state,
+            &make_order(2, Side::Sell, 100, 5, OrderType::LimitGTC),
+        )
+        .unwrap();
+        let buy = make_order(3, Side::Buy, 100, 10, OrderType::LimitIOC);
+        let queues = partition_with(&[buy]);
+        let caps = [(buy.user, 1_000_000u128)];
+        let result = clob_match_with_caps(&mut state, &queues, &caps);
+
+        assert_eq!(result.risk_breach_cancellations, 0);
+        let taker_qty: u64 = result.fills[..result.fill_count]
+            .iter()
+            .filter(|f| !f.is_maker)
+            .map(|f| f.filled_qty)
+            .sum();
+        assert_eq!(taker_qty, 10);
+    }
+
+    #[test]
+    fn test_clob_match_with_caps_over_cap_cancels_remainder() {
+        // Buyer wants 10 @ 100. First fill is 5 @ 100 = 500 notional.
+        // Cap is 499 — so after the first fill, cumulative (500) > 499
+        // and the remaining 5 is cancelled.
+        let mut state = BookState::new();
+        place_resting(
+            &mut state,
+            &make_order(1, Side::Sell, 100, 5, OrderType::LimitGTC),
+        )
+        .unwrap();
+        place_resting(
+            &mut state,
+            &make_order(2, Side::Sell, 100, 5, OrderType::LimitGTC),
+        )
+        .unwrap();
+        let buy = make_order(3, Side::Buy, 100, 10, OrderType::LimitIOC);
+        let queues = partition_with(&[buy]);
+        let caps = [(buy.user, 499u128)];
+        let result = clob_match_with_caps(&mut state, &queues, &caps);
+
+        assert_eq!(result.risk_breach_cancellations, 1);
+        let taker_qty: u64 = result.fills[..result.fill_count]
+            .iter()
+            .filter(|f| !f.is_maker)
+            .map(|f| f.filled_qty)
+            .sum();
+        assert_eq!(taker_qty, 5);
+        // Second ask still has 5 qty — the remainder was cancelled, not
+        // filled at the maker's price.
+        assert_eq!(state.book.ask_count, 1);
+        assert_eq!(state.book.asks[0].total_qty, 5);
+    }
+
+    #[test]
+    fn test_clob_match_with_caps_per_user_independent() {
+        // Two asks at 100, 5 qty each. Two buyers, each wanting 5 qty.
+        // Buyer 1 has cap 100 (first fill 5*100=500 > 100 → cancel).
+        // Buyer 2 has high cap (10_000), fills normally.
+        //
+        // Cap check is POST-fill (see `walk_against_book`), so buy1's
+        // first 5 qty fill IS recorded before the cap fires. The cap
+        // prevents ACCUMULATING beyond the cap, not the first fill itself.
+        // buy2 then takes the remaining 5 qty.
+        let mut state = BookState::new();
+        place_resting(
+            &mut state,
+            &make_order(10, Side::Sell, 100, 5, OrderType::LimitGTC),
+        )
+        .unwrap();
+        place_resting(
+            &mut state,
+            &make_order(11, Side::Sell, 100, 5, OrderType::LimitGTC),
+        )
+        .unwrap();
+        let buy1 = make_order(1, Side::Buy, 100, 5, OrderType::LimitIOC);
+        let buy2 = make_order(2, Side::Buy, 100, 5, OrderType::LimitIOC);
+        let queues = partition_with(&[buy1, buy2]);
+        let caps = [
+            (buy1.user, 100u128),    // Cap 100 — fires after buy1's first fill
+            (buy2.user, 10_000u128), // High cap — buy2 fills normally
+        ];
+        let result = clob_match_with_caps(&mut state, &queues, &caps);
+
+        // Only buy1's cap fired.
+        assert_eq!(result.risk_breach_cancellations, 1);
+        // Total taker qty: buy1 took 5 (cap fired after), buy2 took 5 = 10.
         let taker_qty: u64 = result.fills[..result.fill_count]
             .iter()
             .filter(|f| !f.is_maker)

@@ -72,14 +72,16 @@ pub fn calculate_funding_payment(qty: i64, cum_funding_current: i128, cum_fundin
 
 /// Check if price is within tick alignment
 #[inline]
+#[allow(clippy::manual_is_multiple_of)] // `is_multiple_of` not stable in SBF toolchain (Rust <1.87)
 pub fn is_tick_aligned(price: u64, tick: u64) -> bool {
-    tick > 0 && price.is_multiple_of(tick)
+    tick > 0 && price % tick == 0
 }
 
 /// Check if quantity is within lot alignment
 #[inline]
+#[allow(clippy::manual_is_multiple_of)] // `is_multiple_of` not stable in SBF toolchain (Rust <1.87)
 pub fn is_lot_aligned(qty: u64, lot: u64) -> bool {
-    lot > 0 && qty.is_multiple_of(lot)
+    lot > 0 && qty % lot == 0
 }
 
 /// Round price to tick
