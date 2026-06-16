@@ -20,7 +20,7 @@
 |---|---|---|---|
 | oracle | `percolator-oracle` | declared in `lib.rs` | Fallback price feed (admin-pushed, auto-activate) |
 | perps-core | `mgk-perps-core` | `DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar` | Custody, batch lifecycle, CLOB state, liquidation |
-| perps-matcher | `mgk-perps-matcher` | `9o2vTBBhEp6CYxNsDPsX79Euhzh8TtoLTSHR5R3jXebZ` | CLOB matching (CPI target from core) |
+| perps-matcher | `mgk-perps-matcher` | `AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF` | CLOB matching (CPI target from core) |
 | common | `percolator-common` | (library) | Account validation, errors, math, types |
 
 ### Patterns

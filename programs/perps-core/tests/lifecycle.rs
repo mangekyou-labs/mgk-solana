@@ -34,7 +34,7 @@ const RESULTS_ACCOUNT_SIZE: usize = 2 + 128 * 49;
 
 /// Program IDs matching the keypairs in `target/deploy/`.
 const CORE_ID: Pubkey = solana_sdk::pubkey!("DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar");
-const MATCHER_ID: Pubkey = solana_sdk::pubkey!("9o2vTBBhEp6CYxNsDPsX79Euhzh8TtoLTSHR5R3jXebZ");
+const MATCHER_ID: Pubkey = solana_sdk::pubkey!("AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF");
 
 /// PDA seeds (must match `programs/perps-core/src/pda.rs`).
 const REGISTRY_SEED: &[u8] = b"registry";

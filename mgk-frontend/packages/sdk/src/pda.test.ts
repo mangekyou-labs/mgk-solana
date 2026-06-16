@@ -12,7 +12,7 @@ import {
 } from './pda.js';
 
 const CORE = new PublicKey('DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar');
-const MATCHER = new PublicKey('9o2vTBBhEp6CYxNsDPsX79Euhzh8TtoLTSHR5R3jXebZ');
+const MATCHER = new PublicKey('AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF');
 const USER = new PublicKey('A6qbhK9mPRpFhX7D1kZsBpr2xNy8mfgU5J7Vu9xLE5Rp');
 const SALT = 0x123456789abcdef0n;
 const BATCH = 42n;
@@ -129,7 +129,7 @@ describe('deriveCommitmentPda', () => {
 describe('deriveBookPda', () => {
   it('matches the known vector for (INSTR=1, MATCHER)', () => {
     const [pk, bump] = deriveBookPda(INSTR, MATCHER);
-    expect(pk.toBase58()).toBe('AmCfnuKFPwFaPj2RtFjEUfmyaZTto3fhQWEUQzRuGR71');
+    expect(pk.toBase58()).toBe('B9JLeQmYzuMxjA2Tv3R4xiERcNVR8AbNde1WEL3tzsgd');
     expect(bump).toBe(255);
   });
 
