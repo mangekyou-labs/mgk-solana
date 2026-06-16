@@ -54,7 +54,7 @@ const BOOK_SEED: &[u8] = b"book";
 /// to verify).  Registry: 96 bytes, align 8.  Instrument: 160 bytes, align 16
 /// (M7 7.5: +24 bytes for mark_price, mark_reference_qty, mark_decay_window_slots).
 const REGISTRY_SIZE: usize = 96;
-const INSTRUMENT_SIZE: usize = 160;
+const INSTRUMENT_SIZE: usize = 336;
 const VAULT_SIZE: usize = core::mem::size_of::<Vault>();
 const BATCH_SIZE: usize = core::mem::size_of::<Batch>();
 const COMMITMENT_SIZE: usize = core::mem::size_of::<Commitment>();

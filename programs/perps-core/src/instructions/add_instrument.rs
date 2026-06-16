@@ -63,6 +63,12 @@ pub fn process_add_instrument(
         1_000,   // mark_reference_qty (M7 7.5)
         150,     // mark_decay_window_slots (M7 7.5)
         bump,
+        // M7 7.4 — funding rate params (design L527-532, defaults)
+        1,        // interest_rate_bps
+        5,        // deviation_cap_bps
+        50,       // funding_cap_bps
+        10_000,   // funding_sample_qty
+        8,        // funding_sma_window
     );
     registry.instrument_count += 1;
 

@@ -225,6 +225,37 @@ mod tests {
         // + mark_decay_window_slots (u64) at the tail, the size grows by
         // 24 → 168, but since the trailing fields sit on 8-byte alignment
         // immediately after _padding, the struct is 160 bytes.
-        assert_eq!(size_of::<Instrument>(), 160);
+        // M7 7.4: 160 + 176 (8 new funding fields + 128-byte ring
+        // buffer) = 336 bytes, 16-aligned due to cum_funding: i128.
+        assert_eq!(size_of::<Instrument>(), 336);
+    }
+
+    /// M7 7.4: `last_funding_slot` is `u64` (slot type), not `i64`. Pinned
+    /// at compile time by the struct definition; this runtime check is a
+    /// regression guard against a future "fix" that reverts it to i64.
+    #[test]
+    fn test_last_funding_slot_is_u64() {
+        let mut inst = Instrument::new(1, 1_000_000, 1_000, 100, 50);
+        inst.last_funding_slot = u64::MAX;
+        assert_eq!(inst.last_funding_slot, u64::MAX);
+        inst.last_funding_slot = 0;
+        assert_eq!(inst.last_funding_slot, 0);
+    }
+
+    /// M7 7.4: all new funding fields start at documented defaults
+    /// (design L527-532) and the premium ring buffer is zeroed.
+    #[test]
+    fn test_funding_defaults() {
+        let inst = Instrument::new(1, 1_000_000, 1_000, 100, 50);
+        assert_eq!(inst.interest_rate_bps, 1);
+        assert_eq!(inst.deviation_cap_bps, 5);
+        assert_eq!(inst.funding_cap_bps, 50);
+        assert_eq!(inst.funding_sample_qty, 10_000);
+        assert_eq!(inst.funding_sma_window, 8);
+        assert_eq!(inst.premium_sample_count, 0);
+        assert_eq!(inst.premium_samples, [0i64; 16]);
+        assert_eq!(inst.last_funding_slot, 0);
+        assert_eq!(inst.cum_funding, 0);
+        assert_eq!(inst.funding_interval_slots, 100);
     }
 }

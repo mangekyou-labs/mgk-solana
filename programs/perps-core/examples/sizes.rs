@@ -43,7 +43,7 @@ fn main() {
     inst.oracle_addr.as_mut()[0] = 0x1C; inst.oracle_addr.as_mut()[1] = 0x1C;
     inst.oracle_addr.as_mut()[2] = 0x1C; inst.oracle_addr.as_mut()[3] = 0x1C;
     inst.cum_funding = 0x1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D;
-    inst.last_funding_ts = 0x1E1E1E1E1E1E1E1E;
+    inst.last_funding_slot = 0x1E1E1E1E1E1E1E1E;
     inst.funding_interval_slots = 0x1F1F1F1F1F1F1F1F;
     inst.is_active = true;
     inst.bump = 0xAA;
