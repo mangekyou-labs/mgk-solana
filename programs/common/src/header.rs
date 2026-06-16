@@ -53,6 +53,7 @@ impl SlabHeader {
     pub const LEN: usize = core::mem::size_of::<Self>();
 
     /// Initialize new slab header (v0 minimal)
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         program_id: Pubkey,
         lp_owner: Pubkey,

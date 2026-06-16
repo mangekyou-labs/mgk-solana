@@ -19,7 +19,7 @@ mod math_tests {
         assert_eq!(qty, 150);
         let vwap = calculate_vwap(notional, qty);
         // VWAP = (100*50000 + 50*51000) / 150 = 50,333.33...
-        assert!(vwap >= 50_333 && vwap <= 50_334);
+        assert!((50_333..=50_334).contains(&vwap));
     }
 
     #[test]

@@ -68,6 +68,9 @@ pub enum PercolatorError {
     InvalidCommitment = 503,
     JitPenaltyApplied = 504,
     RoundtripDetected = 505,
+
+    // Perps-core errors (600-699) — M7 onwards
+    RevealDeadlineExpired = 600,
 }
 
 impl From<PercolatorError> for u64 {

@@ -2,18 +2,12 @@
 
 /// Single price level in the book
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct QuoteLevel {
     /// Price (1e6 scale, e.g., 50_000_000_000 = $50,000)
     pub px: i64,
     /// Available quantity at this level (1e6 scale)
     pub avail_qty: i64,
-}
-
-impl Default for QuoteLevel {
-    fn default() -> Self {
-        Self { px: 0, avail_qty: 0 }
-    }
 }
 
 /// Quote cache - constantly updated summary of best levels
@@ -72,6 +66,12 @@ impl QuoteCache {
     /// Get total available quantity across all ask levels
     pub fn total_ask_qty(&self) -> i64 {
         self.best_asks.iter().map(|l| l.avail_qty).sum()
+    }
+}
+
+impl Default for QuoteCache {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

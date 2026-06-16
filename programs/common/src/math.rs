@@ -20,7 +20,7 @@ pub fn mul_u64_u128(a: u64, b: u128) -> u128 {
 #[inline]
 pub fn div_ceil_u128(numerator: u128, denominator: u64) -> u128 {
     let denom = denominator as u128;
-    (numerator + denom - 1) / denom
+    numerator.div_ceil(denom)
 }
 
 /// Divide u128 by u64, rounding down
@@ -73,13 +73,13 @@ pub fn calculate_funding_payment(qty: i64, cum_funding_current: i128, cum_fundin
 /// Check if price is within tick alignment
 #[inline]
 pub fn is_tick_aligned(price: u64, tick: u64) -> bool {
-    price % tick == 0
+    tick > 0 && price.is_multiple_of(tick)
 }
 
 /// Check if quantity is within lot alignment
 #[inline]
 pub fn is_lot_aligned(qty: u64, lot: u64) -> bool {
-    qty % lot == 0
+    lot > 0 && qty.is_multiple_of(lot)
 }
 
 /// Round price to tick
@@ -97,7 +97,7 @@ pub fn round_to_lot(qty: u64, lot: u64) -> u64 {
 /// Calculate IM requirement: |qty| * contract_size * mark_price * imr
 #[inline]
 pub fn calculate_im(qty: i64, contract_size: u64, mark_price: u64, imr_bps: u64) -> u128 {
-    let abs_qty = qty.abs() as u64;
+    let abs_qty = qty.unsigned_abs();
     let notional = mul_u64(abs_qty, contract_size);
     let notional_value = mul_u64_u128(mark_price, notional);
     // imr_bps is in basis points (1 bp = 0.01%)
@@ -107,7 +107,7 @@ pub fn calculate_im(qty: i64, contract_size: u64, mark_price: u64, imr_bps: u64)
 /// Calculate MM requirement: |qty| * contract_size * mark_price * mmr
 #[inline]
 pub fn calculate_mm(qty: i64, contract_size: u64, mark_price: u64, mmr_bps: u64) -> u128 {
-    let abs_qty = qty.abs() as u64;
+    let abs_qty = qty.unsigned_abs();
     let notional = mul_u64(abs_qty, contract_size);
     let notional_value = mul_u64_u128(mark_price, notional);
     // mmr_bps is in basis points (1 bp = 0.01%)
@@ -129,7 +129,7 @@ mod tests {
         assert_eq!(qty, 150);
         let vwap = calculate_vwap(notional, qty);
         // VWAP should be (100*50000 + 50*51000) / 150 = 50333.33...
-        assert!(vwap >= 50_333 && vwap <= 50_334);
+        assert!((50_333..=50_334).contains(&vwap));
     }
 
     #[test]

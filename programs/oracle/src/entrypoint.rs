@@ -17,6 +17,15 @@ enum OracleInstruction {
 
     /// Update the oracle price
     UpdatePrice,
+
+    /// Set the oracle authority
+    SetAuthority,
+
+    /// Activate the oracle
+    Activate,
+
+    /// Deactivate the oracle
+    Deactivate,
 }
 
 /// Process oracle instruction
@@ -34,6 +43,9 @@ pub fn process_instruction(
     let instruction = match discriminator {
         0 => OracleInstruction::Initialize,
         1 => OracleInstruction::UpdatePrice,
+        2 => OracleInstruction::SetAuthority,
+        3 => OracleInstruction::Activate,
+        4 => OracleInstruction::Deactivate,
         _ => {
             msg!("Error: Unknown instruction");
             return Err(ProgramError::InvalidInstructionData);
@@ -48,6 +60,18 @@ pub fn process_instruction(
         OracleInstruction::UpdatePrice => {
             msg!("Instruction: UpdatePrice");
             instructions::process_update_price(program_id, accounts, &instruction_data[1..])
+        }
+        OracleInstruction::SetAuthority => {
+            msg!("Instruction: SetAuthority");
+            instructions::process_set_authority(program_id, accounts, &instruction_data[1..])
+        }
+        OracleInstruction::Activate => {
+            msg!("Instruction: Activate");
+            instructions::process_activate(program_id, accounts, &instruction_data[1..])
+        }
+        OracleInstruction::Deactivate => {
+            msg!("Instruction: Deactivate");
+            instructions::process_deactivate(program_id, accounts, &instruction_data[1..])
         }
     }
 }

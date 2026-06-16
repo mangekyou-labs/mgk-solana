@@ -1,26 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    "programs/router",
-    "programs/slab",
-    "programs/amm",
-    "programs/oracle",
     "programs/common",
-    "tests/integration",
-    "tests/e2e",
-    "keeper",
-    "cli",
-    "crates/model_safety",
-    "crates/amm_model",
-    "crates/proofs/kani",
+    "programs/oracle",
+    "programs/perps-core",
+    "programs/perps-matcher",
 ]
 # Only build programs by default for cargo build-sbf
 default-members = [
-    "programs/router",
-    "programs/slab",
-    "programs/amm",
-    "programs/oracle",
     "programs/common",
+    "programs/oracle",
+    "programs/perps-core",
+    "programs/perps-matcher",
 ]
 
 [workspace.package]

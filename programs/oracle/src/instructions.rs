@@ -143,3 +143,157 @@ pub fn process_update_price(
     msg!("Price updated");
     Ok(())
 }
+
+/// Set the authority of an oracle
+///
+/// Accounts:
+/// 0. `[writable]` Oracle account
+/// 1. `[signer]` Authority (current authority)
+///
+/// Instruction data:
+/// - new_authority: Pubkey (32 bytes)
+pub fn process_set_authority(
+    _program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    if accounts.len() < 2 {
+        msg!("Error: SetAuthority requires 2 accounts");
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+
+    if data.len() < 32 {
+        msg!("Error: SetAuthority requires 32 bytes of data");
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    let oracle_account = &accounts[0];
+    let authority_account = &accounts[1];
+
+    if !authority_account.is_signer() {
+        msg!("Error: Authority must be signer");
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+
+    if !oracle_account.is_writable() {
+        msg!("Error: Oracle account must be writable");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let new_authority_bytes: [u8; 32] = data[0..32]
+        .try_into()
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
+    let new_authority = Pubkey::from(new_authority_bytes);
+
+    let oracle_data = oracle_account.try_borrow_mut_data()?;
+    let oracle = unsafe { &mut *(oracle_data.as_ptr() as *mut PriceOracle) };
+
+    if !oracle.validate() {
+        msg!("Error: Invalid oracle account");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    if oracle.authority != *authority_account.key() {
+        msg!("Error: Invalid authority");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    oracle.set_authority(new_authority);
+
+    msg!("Authority updated");
+    Ok(())
+}
+
+/// Activate the oracle (enable price reads)
+///
+/// Accounts:
+/// 0. `[writable]` Oracle account
+/// 1. `[signer]` Authority
+pub fn process_activate(
+    _program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    _data: &[u8],
+) -> ProgramResult {
+    if accounts.len() < 2 {
+        msg!("Error: Activate requires 2 accounts");
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+
+    let oracle_account = &accounts[0];
+    let authority_account = &accounts[1];
+
+    if !authority_account.is_signer() {
+        msg!("Error: Authority must be signer");
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+
+    if !oracle_account.is_writable() {
+        msg!("Error: Oracle account must be writable");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let oracle_data = oracle_account.try_borrow_mut_data()?;
+    let oracle = unsafe { &mut *(oracle_data.as_ptr() as *mut PriceOracle) };
+
+    if !oracle.validate() {
+        msg!("Error: Invalid oracle account");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    if oracle.authority != *authority_account.key() {
+        msg!("Error: Invalid authority");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    oracle.activate();
+
+    msg!("Oracle activated");
+    Ok(())
+}
+
+/// Deactivate the oracle (disable price reads)
+///
+/// Accounts:
+/// 0. `[writable]` Oracle account
+/// 1. `[signer]` Authority
+pub fn process_deactivate(
+    _program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    _data: &[u8],
+) -> ProgramResult {
+    if accounts.len() < 2 {
+        msg!("Error: Deactivate requires 2 accounts");
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+
+    let oracle_account = &accounts[0];
+    let authority_account = &accounts[1];
+
+    if !authority_account.is_signer() {
+        msg!("Error: Authority must be signer");
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+
+    if !oracle_account.is_writable() {
+        msg!("Error: Oracle account must be writable");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let oracle_data = oracle_account.try_borrow_mut_data()?;
+    let oracle = unsafe { &mut *(oracle_data.as_ptr() as *mut PriceOracle) };
+
+    if !oracle.validate() {
+        msg!("Error: Invalid oracle account");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    if oracle.authority != *authority_account.key() {
+        msg!("Error: Invalid authority");
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    oracle.deactivate();
+
+    msg!("Oracle deactivated");
+    Ok(())
+}

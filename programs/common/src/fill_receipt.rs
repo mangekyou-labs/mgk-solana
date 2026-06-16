@@ -61,6 +61,12 @@ impl FillReceipt {
     }
 }
 
+impl Default for FillReceipt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -55,9 +55,13 @@ desktop.ini
 # Solana keys (security)
 *.json
 !Cargo.json
+!package.json
+!**/package.json
+!**/tsconfig*.json
 !**/test-fixtures/**/*.json
 !sbf-solana-solana.json
 !Surfpool.toml
+!pnpm-workspace.yaml
 
 # Local configuration
 .env

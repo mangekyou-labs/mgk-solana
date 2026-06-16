@@ -315,8 +315,7 @@ pub const MAX_AGGRESSOR_ENTRIES: usize = 4_000;
 // Size checks to ensure we're within 10 MB for slab
 const _: () = {
     const fn check_size() {
-        let total = 0
-            + (MAX_ACCOUNTS * core::mem::size_of::<AccountState>())
+        let total = (MAX_ACCOUNTS * core::mem::size_of::<AccountState>())
             + (MAX_INSTRUMENTS * core::mem::size_of::<Instrument>())
             + (MAX_ORDERS * core::mem::size_of::<Order>())
             + (MAX_POSITIONS * core::mem::size_of::<Position>())

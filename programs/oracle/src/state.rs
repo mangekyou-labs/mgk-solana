@@ -22,8 +22,11 @@ pub struct PriceOracle {
     /// Bump seed for PDA
     pub bump: u8,
 
+    /// Whether this oracle is currently active
+    pub is_active: bool,
+
     /// Padding for alignment
-    pub _padding: [u8; 6],
+    pub _padding: [u8; 5],
 
     /// Authority that can update prices
     pub authority: Pubkey,
@@ -57,7 +60,8 @@ impl PriceOracle {
             magic: u64::from_le_bytes(*Self::MAGIC),
             version: Self::VERSION,
             bump,
-            _padding: [0; 6],
+            is_active: false,
+            _padding: [0; 5],
             authority,
             instrument,
             price,
@@ -77,6 +81,21 @@ impl PriceOracle {
         self.price = price;
         self.timestamp = timestamp;
         self.confidence = confidence;
+    }
+
+    /// Activate the oracle (enable price reads)
+    pub fn activate(&mut self) {
+        self.is_active = true;
+    }
+
+    /// Deactivate the oracle (disable price reads)
+    pub fn deactivate(&mut self) {
+        self.is_active = false;
+    }
+
+    /// Transfer authority to a new pubkey
+    pub fn set_authority(&mut self, new_authority: Pubkey) {
+        self.authority = new_authority;
     }
 }
 
@@ -113,5 +132,29 @@ mod tests {
         assert_eq!(oracle.price, 61_000_000_000);
         assert_eq!(oracle.timestamp, 1234567890);
         assert_eq!(oracle.confidence, 100_000);
+    }
+
+    #[test]
+    fn test_activate_deactivate() {
+        let authority = Pubkey::default();
+        let instrument = Pubkey::default();
+        let mut oracle = PriceOracle::new(authority, instrument, 60_000_000_000, 0);
+
+        assert!(!oracle.is_active);
+        oracle.activate();
+        assert!(oracle.is_active);
+        oracle.deactivate();
+        assert!(!oracle.is_active);
+    }
+
+    #[test]
+    fn test_set_authority() {
+        let authority = Pubkey::default();
+        let instrument = Pubkey::default();
+        let mut oracle = PriceOracle::new(authority, instrument, 60_000_000_000, 0);
+
+        let new_authority = Pubkey::from([1u8; 32]);
+        oracle.set_authority(new_authority);
+        assert_eq!(oracle.authority, new_authority);
     }
 }

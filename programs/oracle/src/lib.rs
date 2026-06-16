@@ -6,6 +6,9 @@
 //!
 //! - **Initialize** (0): Create a new price oracle for an instrument
 //! - **UpdatePrice** (1): Update the price data (authority only)
+//! - **SetAuthority** (2): Transfer authority to a new key (current authority only)
+//! - **Activate** (3): Enable price reads (authority only)
+//! - **Deactivate** (4): Disable price reads (authority only)
 //!
 //! ## Account Structure
 //!

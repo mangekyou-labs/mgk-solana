@@ -122,7 +122,7 @@ pub unsafe fn borrow_account_data<T>(account: &AccountInfo) -> Result<&T, Percol
 
     // Check alignment
     let ptr = data.as_ptr();
-    if (ptr as usize) % core::mem::align_of::<T>() != 0 {
+    if !(ptr as usize).is_multiple_of(core::mem::align_of::<T>()) {
         return Err(PercolatorError::InvalidAccount);
     }
 
@@ -143,8 +143,9 @@ pub unsafe fn borrow_account_data<T>(account: &AccountInfo) -> Result<&T, Percol
 /// # Returns
 /// * `Ok(&mut T)` if the account data can be safely cast to &mut T
 /// * `Err(PercolatorError)` if validation fails
+#[allow(clippy::mut_from_ref)]
 pub unsafe fn borrow_account_data_mut<T>(account: &AccountInfo) -> Result<&mut T, PercolatorError> {
-    let mut data = account.try_borrow_mut_data().map_err(|_| PercolatorError::InvalidAccount)?;
+    let data = account.try_borrow_mut_data().map_err(|_| PercolatorError::InvalidAccount)?;
 
     // Check size
     if data.len() < core::mem::size_of::<T>() {
@@ -152,8 +153,8 @@ pub unsafe fn borrow_account_data_mut<T>(account: &AccountInfo) -> Result<&mut T
     }
 
     // Check alignment
-    let ptr = data.as_mut_ptr();
-    if (ptr as usize) % core::mem::align_of::<T>() != 0 {
+    let ptr = data.as_ptr();
+    if !(ptr as usize).is_multiple_of(core::mem::align_of::<T>()) {
         return Err(PercolatorError::InvalidAccount);
     }
 
