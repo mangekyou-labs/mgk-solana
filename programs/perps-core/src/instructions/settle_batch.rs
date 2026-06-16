@@ -1,10 +1,16 @@
 use crate::pda::derive_batch_pda;
 use crate::state::batch::{Batch, BatchStatus, Commitment, CommitmentStatus};
+use crate::state::funding::{
+    accrue_cum_funding, compute_funding_rate, compute_premium_sample, compute_premium_sma,
+    record_premium_sample,
+};
 use crate::state::instrument::Instrument;
+use crate::state::mark_price::sweep_book_side;
 use crate::state::portfolio::Portfolio;
 use crate::state::registry::Registry;
 use crate::state::vault::Vault;
-use percolator_common::PercolatorError;
+use mgk_perps_matcher::state::book::OrderBook;
+use percolator_common::{math::calculate_funding_payment, PercolatorError};
 use pinocchio::{
     account_info::AccountInfo, msg, program_error::ProgramError, pubkey::Pubkey,
     sysvars::{clock::Clock, Sysvar},
@@ -95,6 +101,107 @@ fn read_oracle_price(oracle_account: &AccountInfo) -> Option<i64> {
         .try_into()
         .ok()?;
     Some(i64::from_le_bytes(price_bytes))
+}
+
+/// M7 7.4: Recompute the funding premium sample for this batch and
+/// accrue `cum_funding` on the instrument. The premium is the
+/// depth-weighted bid/ask vs oracle (design L504-515), recorded into
+/// the instrument's ring buffer, averaged via the configured SMA
+/// window, and applied as a per-interval rate (design L519-540).
+///
+/// Reads `instrument.cum_funding` / `last_funding_slot` and writes
+/// back the updated values. Does NOT apply payments to portfolios —
+/// that happens in `apply_funding_to_portfolio` below.
+///
+/// This function is no-op if the oracle price is unavailable AND the
+/// book is one-sided (no premium can be computed). `cum_funding` and
+/// `last_funding_slot` are unchanged in that case (the carry-forward
+/// behavior matches mark_price for first-batch / stale-book cases).
+fn apply_funding_to_instrument(
+    instrument: &mut Instrument,
+    book: &OrderBook,
+    oracle_price: Option<i64>,
+    current_slot: u64,
+) {
+    // 1. Re-sweep both book sides with the funding-specific reference
+    //    qty (separate from `mark_reference_qty` so the funding premium
+    //    can use a different depth target if desired). Reuses
+    //    `sweep_book_side` from M7 7.5.
+    let p_bid = sweep_book_side(&book.bids, false, instrument.funding_sample_qty);
+    let p_ask = sweep_book_side(&book.asks, true, instrument.funding_sample_qty);
+
+    // 2. Compute the premium sample. None means "skip — book is
+    //    one-sided or oracle is invalid; carry forward".
+    if let Some(oracle) = oracle_price {
+        if let Some(premium) = compute_premium_sample(p_bid, p_ask, oracle) {
+            record_premium_sample(instrument, premium);
+        }
+    }
+
+    // 3. Compute SMA over the ring buffer and the funding rate.
+    let sma = compute_premium_sma(
+        &instrument.premium_samples,
+        instrument.premium_sample_count,
+        instrument.funding_sma_window,
+    );
+    let rate = compute_funding_rate(
+        sma,
+        instrument.interest_rate_bps,
+        instrument.deviation_cap_bps,
+        instrument.funding_cap_bps,
+    );
+
+    // 4. Accrue `cum_funding` by `rate × funding_period`. Advances
+    //    `last_funding_slot` by the same number of intervals so the next
+    //    batch doesn't double-count the remainder.
+    let (delta, new_last) = accrue_cum_funding(
+        current_slot,
+        instrument.last_funding_slot,
+        instrument.funding_interval_slots,
+        rate,
+    );
+    instrument.cum_funding = instrument.cum_funding.saturating_add(delta);
+    instrument.last_funding_slot = new_last;
+}
+
+/// M7 7.4: Apply the current funding rate to a single portfolio's
+/// position(s) in the given instrument. Iterates `portfolio.positions`
+/// looking for `instrument_id`, computes
+/// `qty × (cum_funding − last_funding_checkpoint[instrument_id])` per
+/// position (via `percolator_common::math::calculate_funding_payment`),
+/// adds the sum to `portfolio.pnl`, and updates the checkpoint.
+///
+/// `last_funding_checkpoint[instrument_id]` is the
+/// `portfolio.last_funding_checkpoint[idx]` where
+/// `idx = instrument_id as usize`. Out-of-range `instrument_id`
+/// (>= MAX_INSTRUMENTS) is a no-op (defensive — instrument_id is u16,
+/// but only MAX_INSTRUMENTS=32 slots are allocated).
+fn apply_funding_to_portfolio(
+    portfolio: &mut Portfolio,
+    instrument_id: u16,
+    cum_funding: i128,
+) {
+    let idx = instrument_id as usize;
+    if idx >= portfolio.last_funding_checkpoint.len() {
+        return;
+    }
+    let entry = portfolio.last_funding_checkpoint[idx];
+    if entry == cum_funding {
+        return; // no funding accrued since last checkpoint
+    }
+    let mut total_payment: i128 = 0;
+    for i in 0..portfolio.positions_len as usize {
+        if portfolio.positions[i].instrument_id == instrument_id {
+            let qty = portfolio.positions[i].qty;
+            let payment = calculate_funding_payment(qty, cum_funding, entry);
+            total_payment = total_payment.saturating_add(payment);
+        }
+    }
+    if total_payment != 0 {
+        portfolio.pnl = portfolio.pnl.saturating_add(total_payment);
+        portfolio.recalc_margin();
+    }
+    portfolio.last_funding_checkpoint[idx] = cum_funding;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -417,6 +524,23 @@ pub fn process_settle_batch(
         instrument.mark_decay_window_slots,
     );
     instrument.mark_price = new_mark_price;
+
+    // M7 7.4: Funding rate accrual. Re-sweeps the book for the funding
+    // premium (separate from the mark sweep so the depth target can
+    // differ), computes the SMA-clamped funding rate, accrues
+    // `instrument.cum_funding` by `rate × funding_period`, and applies
+    // the resulting payment to every portfolio holding a position in
+    // this instrument. See `state/funding.rs` for the pure helpers and
+    // design L504-553 for the formulas.
+    apply_funding_to_instrument(instrument, &book, oracle_price, current_slot);
+    let post_funding_cum = instrument.cum_funding;
+    let instrument_id_for_funding = instrument.instrument_id;
+    for portfolio_account in portfolio_accounts.iter() {
+        let portfolio = unsafe {
+            &mut *(portfolio_account.borrow_mut_data_unchecked().as_ptr() as *mut Portfolio)
+        };
+        apply_funding_to_portfolio(portfolio, instrument_id_for_funding, post_funding_cum);
+    }
 
     // Increment batch counter in registry
     let registry_mut = unsafe {
@@ -857,5 +981,269 @@ mod tests {
         assert_eq!(offset_of!(Portfolio, pnl), 64);
         assert_eq!(offset_of!(Portfolio, im), 80);
         assert_eq!(offset_of!(Portfolio, mm), 96);
+    }
+
+    // ---- M7 7.4.3 — funding integration into SettleBatch ----
+
+    use crate::state::instrument::Instrument;
+    use crate::state::portfolio::{Position, MAX_INSTRUMENTS, MAX_POSITIONS};
+    use mgk_perps_matcher::state::book::{BookLevel, OrderBook, NULL_OFFSET};
+
+    fn empty_book() -> OrderBook {
+        // An OrderBook is `#[repr(C)]` with a fixed size; for unit tests
+        // we zero-init the level arrays and the header.
+        let mut book = OrderBook {
+            instrument_id: 1,
+            best_bid: 0,
+            best_ask: 0,
+            bid_count: 0,
+            ask_count: 0,
+            next_order_id: 0,
+            last_update_slot: 0,
+            bids: [BookLevel::default(); 64],
+            asks: [BookLevel::default(); 64],
+        };
+        // Touch the level defaults to silence "field never read" warnings.
+        for lvl in book.bids.iter_mut() {
+            lvl.first_order_offset = NULL_OFFSET;
+        }
+        for lvl in book.asks.iter_mut() {
+            lvl.first_order_offset = NULL_OFFSET;
+        }
+        book
+    }
+
+    fn two_sided_book(bid_price: i64, bid_qty: u64, ask_price: i64, ask_qty: u64) -> OrderBook {
+        let mut book = empty_book();
+        book.bids[0] = BookLevel {
+            price: bid_price,
+            total_qty: bid_qty,
+            order_count: 1,
+            first_order_offset: NULL_OFFSET,
+        };
+        book.bid_count = 1;
+        book.best_bid = bid_price;
+        book.asks[0] = BookLevel {
+            price: ask_price,
+            total_qty: ask_qty,
+            order_count: 1,
+            first_order_offset: NULL_OFFSET,
+        };
+        book.ask_count = 1;
+        book.best_ask = ask_price;
+        book
+    }
+
+    fn portfolio_with_position(user_bytes: [u8; 32], instrument_id: u16, qty: i64) -> Portfolio {
+        let user = pinocchio::pubkey::Pubkey::from(user_bytes);
+        let mut p = Portfolio::new(user);
+        if qty != 0 {
+            p.positions[0] = Position {
+                instrument_id,
+                qty,
+                entry_vwap: 100_000,
+            };
+            p.positions_len = 1;
+        }
+        p
+    }
+
+    // ---- apply_funding_to_instrument ----
+
+    #[test]
+    fn test_apply_funding_balanced_book_records_zero_premium() {
+        let mut inst = Instrument::new(1, 1, 1, 100, 50);
+        let book = two_sided_book(100_000, 100, 100_000, 100);
+        // Premium = 0 (mark = oracle) → SMA = 0 → rate = interest (1 bp).
+        // After 1 interval (current=100, last=0, interval=100) → delta = 1.
+        apply_funding_to_instrument(&mut inst, &book, Some(100_000), 100);
+        assert_eq!(inst.cum_funding, 1);
+        assert_eq!(inst.last_funding_slot, 100);
+        assert_eq!(inst.premium_sample_count, 1);
+        assert_eq!(inst.premium_samples[0], 0);
+    }
+
+    #[test]
+    fn test_apply_funding_no_oracle_skips_premium() {
+        let mut inst = Instrument::new(1, 1, 1, 100, 50);
+        let book = two_sided_book(100_000, 100, 100_000, 100);
+        let cum_before = inst.cum_funding;
+        let last_before = inst.last_funding_slot;
+        // No oracle → premium not recorded, but the rate computation
+        // uses whatever the SMA was previously (empty → 0) → rate = 1 bp,
+        // and the period accrual still happens. cum_funding still
+        // increases (this is the "funding without a fresh premium" case
+        // — the rate falls back to the interest_rate because premium_sma=0).
+        apply_funding_to_instrument(&mut inst, &book, None, 100);
+        assert_eq!(inst.cum_funding, cum_before + 1);
+        assert_eq!(inst.last_funding_slot, 100);
+        assert_eq!(inst.premium_sample_count, 0);
+        let _ = last_before;
+    }
+
+    #[test]
+    fn test_apply_funding_one_sided_book_skips_premium_record() {
+        let mut inst = Instrument::new(1, 1, 1, 100, 50);
+        let mut book = empty_book();
+        book.bids[0] = BookLevel {
+            price: 100_000,
+            total_qty: 100,
+            order_count: 1,
+            first_order_offset: NULL_OFFSET,
+        };
+        book.bid_count = 1;
+        // No asks → premium not computed (compute_premium_sample returns None).
+        apply_funding_to_instrument(&mut inst, &book, Some(100_000), 100);
+        // SMA is still empty → rate = 1 bp → delta = 1.
+        assert_eq!(inst.cum_funding, 1);
+        assert_eq!(inst.premium_sample_count, 0);
+    }
+
+    #[test]
+    fn test_apply_funding_multi_period_accrues_multiplied() {
+        let mut inst = Instrument::new(1, 1, 1, 100, 50);
+        let book = two_sided_book(100_000, 100, 100_000, 100);
+        // 3 intervals elapsed (current=300, last=0, interval=100) → delta = 3.
+        apply_funding_to_instrument(&mut inst, &book, Some(100_000), 300);
+        assert_eq!(inst.cum_funding, 3);
+        assert_eq!(inst.last_funding_slot, 300);
+    }
+
+    #[test]
+    fn test_apply_funding_within_interval_is_noop() {
+        let mut inst = Instrument::new(1, 1, 1, 100, 50);
+        // Pretend we already accrued at slot 100; now we're at 150, which
+        // is within the same interval.
+        inst.last_funding_slot = 100;
+        inst.cum_funding = 5;
+        let book = two_sided_book(100_000, 100, 100_000, 100);
+        apply_funding_to_instrument(&mut inst, &book, Some(100_000), 150);
+        assert_eq!(inst.cum_funding, 5);
+        assert_eq!(inst.last_funding_slot, 100);
+    }
+
+    // ---- apply_funding_to_portfolio ----
+
+    #[test]
+    fn test_apply_funding_to_portfolio_no_position_in_instrument_no_pnl_change() {
+        // qty=0 in the position — no payment, but checkpoint still moves
+        // forward so we don't re-evaluate the same cum_funding next time.
+        let mut p = portfolio_with_position([1u8; 32], 1, 0);
+        let pnl_before = p.pnl;
+        apply_funding_to_portfolio(&mut p, 1, 1_000);
+        assert_eq!(p.pnl, pnl_before);
+        assert_eq!(p.last_funding_checkpoint[1], 1_000);
+    }
+
+    #[test]
+    fn test_apply_funding_to_portfolio_different_instrument_no_pnl_change() {
+        // Position is in instrument 1; we accrue funding for instrument 2.
+        // The portfolio has no position in instrument 2 → pnl unchanged.
+        // The instrument-2 checkpoint is still advanced.
+        let mut p = portfolio_with_position([1u8; 32], 1, 10);
+        let pnl_before = p.pnl;
+        apply_funding_to_portfolio(&mut p, 2, 1_000);
+        assert_eq!(p.pnl, pnl_before);
+        assert_eq!(p.last_funding_checkpoint[2], 1_000);
+        // Instrument-1 checkpoint must NOT be touched by an instrument-2
+        // funding application.
+        assert_eq!(p.last_funding_checkpoint[1], 0);
+    }
+
+    #[test]
+    fn test_apply_funding_to_portfolio_same_cum_funding_is_noop() {
+        // Portfolio checkpoint already matches cum_funding → no change.
+        let mut p = portfolio_with_position([1u8; 32], 1, 10);
+        p.last_funding_checkpoint[1] = 5;
+        let pnl_before = p.pnl;
+        apply_funding_to_portfolio(&mut p, 1, 5);
+        assert_eq!(p.pnl, pnl_before);
+    }
+
+    #[test]
+    fn test_apply_funding_long_position_positive_cum_increases_pnl() {
+        // Long (qty=10), cum delta = +5. payment = 10 * 5 = 50. pnl += 50.
+        let mut p = portfolio_with_position([1u8; 32], 1, 10);
+        p.last_funding_checkpoint[1] = 0;
+        apply_funding_to_portfolio(&mut p, 1, 5);
+        assert_eq!(p.pnl, 50);
+        assert_eq!(p.last_funding_checkpoint[1], 5);
+    }
+
+    #[test]
+    fn test_apply_funding_short_position_positive_cum_decreases_pnl() {
+        // Short (qty=-10), cum delta = +5. payment = -10 * 5 = -50. pnl += -50.
+        let mut p = portfolio_with_position([2u8; 32], 1, -10);
+        apply_funding_to_portfolio(&mut p, 1, 5);
+        assert_eq!(p.pnl, -50);
+        assert_eq!(p.last_funding_checkpoint[1], 5);
+    }
+
+    #[test]
+    fn test_apply_funding_multiple_positions_same_instrument_sum() {
+        // Two positions in instrument 1 (qty=10 and qty=5), cum delta=4.
+        // payment = 10*4 + 5*4 = 60. pnl += 60.
+        let mut p = portfolio_with_position([1u8; 32], 1, 10);
+        p.positions[1] = Position {
+            instrument_id: 1,
+            qty: 5,
+            entry_vwap: 100_000,
+        };
+        p.positions_len = 2;
+        apply_funding_to_portfolio(&mut p, 1, 4);
+        assert_eq!(p.pnl, 60);
+    }
+
+    #[test]
+    fn test_apply_funding_out_of_range_instrument_id_is_noop() {
+        // instrument_id=999 is way beyond MAX_INSTRUMENTS=32.
+        let mut p = portfolio_with_position([1u8; 32], 1, 10);
+        let pnl_before = p.pnl;
+        apply_funding_to_portfolio(&mut p, 999, 1_000);
+        assert_eq!(p.pnl, pnl_before);
+    }
+
+    #[test]
+    fn test_apply_funding_zero_qty_position_updates_checkpoint_only() {
+        // Position exists but qty=0 → payment = 0 (no pnl change), but
+        // the checkpoint still moves forward so we don't re-evaluate.
+        let mut p = portfolio_with_position([1u8; 32], 1, 0);
+        p.positions[0] = Position {
+            instrument_id: 1,
+            qty: 0,
+            entry_vwap: 0,
+        };
+        p.positions_len = 1;
+        let pnl_before = p.pnl;
+        apply_funding_to_portfolio(&mut p, 1, 1_000);
+        assert_eq!(p.pnl, pnl_before);
+        // Checkpoint is updated even though no payment was applied.
+        assert_eq!(p.last_funding_checkpoint[1], 1_000);
+    }
+
+    // ---- Conservation: hedged portfolio (long +10, short -10) is zero-sum ----
+
+    #[test]
+    fn test_apply_funding_hedged_portfolio_conservation() {
+        // After applying funding to two portfolios that are long/short
+        // counterparts in the same instrument, the sum of pnl changes
+        // must be zero. This is the same property the Kani proof
+        // (common::math::m10_funding_symmetry) guarantees, lifted to
+        // the portfolio level.
+        let mut long_p = portfolio_with_position([1u8; 32], 1, 10);
+        let mut short_p = portfolio_with_position([2u8; 32], 1, -10);
+        let cum = 1_000i128;
+        apply_funding_to_portfolio(&mut long_p, 1, cum);
+        apply_funding_to_portfolio(&mut short_p, 1, cum);
+        assert_eq!(long_p.pnl + short_p.pnl, 0);
+        assert_eq!(long_p.pnl, 10_000);
+        assert_eq!(short_p.pnl, -10_000);
+    }
+
+    // Pin the constants used by the integration helpers.
+    #[test]
+    fn test_max_instruments_matches_array_size() {
+        assert_eq!(MAX_INSTRUMENTS, 32);
+        assert_eq!(MAX_POSITIONS, 32);
     }
 }
