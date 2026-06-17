@@ -6,16 +6,25 @@ use pinocchio::{
     ProgramResult,
 };
 
-#[allow(clippy::too_many_arguments)]
 pub fn process_withdraw(
-    registry: &Registry,
     _portfolio_account: &AccountInfo,
     portfolio: &mut Portfolio,
     user_account: &AccountInfo,
     vault_account: &AccountInfo,
     vault: &mut Vault,
+    registry_account: &AccountInfo,
     amount: u64,
 ) -> ProgramResult {
+    // M7 7.8: governance emergency brake. Withdrawals can be paused
+    // (e.g. oracle outage, suspected bug). Deposits stay open so users
+    // can still fund defensive positions during a paused-but-recovering
+    // state.
+    let registry = unsafe { &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry) };
+    if registry.is_withdrawals_paused() {
+        msg!("Error: Withdrawals are paused");
+        return Err(PercolatorError::OperationPaused.into());
+    }
+
     if amount == 0 {
         msg!("Error: Withdraw amount must be greater than zero");
         return Err(PercolatorError::InvalidQuantity.into());
@@ -24,15 +33,6 @@ pub fn process_withdraw(
     if !user_account.is_signer() {
         msg!("Error: User must be a signer");
         return Err(PercolatorError::Unauthorized.into());
-    }
-
-    // M7 7.8: governance emergency brake. Withdrawals can be paused to
-    // halt a bank run or a malicious-key drain. Deposits stay open so
-    // users can still fund defensive positions if the protocol is in a
-    // paused-but-recovering state.
-    if registry.is_withdrawals_paused() {
-        msg!("Error: Withdrawals are paused");
-        return Err(PercolatorError::OperationPaused.into());
     }
 
     if portfolio.user != *user_account.key() {
@@ -72,4 +72,23 @@ pub fn process_withdraw(
 
     msg!("Withdraw successful");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::registry::PAUSE_WITHDRAWALS;
+
+    /// M7 7.8: `withdrawals_paused` blocks `Withdraw`. See the
+    /// matching test in `commit_order.rs` for why we pin the pattern
+    /// here rather than call the full instruction.
+    #[test]
+    fn test_withdraw_withdrawals_paused_pattern() {
+        use pinocchio::pubkey::Pubkey;
+        let mut r = Registry::new(Pubkey::from([9u8; 32]));
+        r.set_pause_flags(PAUSE_WITHDRAWALS);
+        assert!(r.is_withdrawals_paused());
+        let err: u64 = PercolatorError::OperationPaused.into();
+        assert_eq!(err, 602);
+    }
 }

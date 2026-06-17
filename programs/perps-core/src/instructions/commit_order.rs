@@ -103,6 +103,15 @@ pub fn process_commit_order(
     batch_id: u64,
     _commitment_bump: u8,
 ) -> ProgramResult {
+    // M7 7.8: governance emergency brake. Trading pause blocks new
+    // commitments. Read the registry first so a paused caller fails
+    // before any state mutation.
+    let registry = unsafe { &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry) };
+    if registry.is_trading_paused() {
+        msg!("Error: Trading is paused");
+        return Err(PercolatorError::OperationPaused.into());
+    }
+
     if !user_account.is_signer() {
         msg!("Error: User must be signer");
         return Err(PercolatorError::Unauthorized.into());
@@ -126,17 +135,8 @@ pub fn process_commit_order(
         return Err(PercolatorError::Unauthorized.into());
     }
 
-    // Read registry for dynamic deposit (base * volatility_multiplier)
-    let registry = unsafe { &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry) };
-
-    // M7 7.8: governance emergency brake. Reject new commitments when
-    // `trading_paused` is set. Reveal / cancel / withdraw are unaffected
-    // — users can still exit positions and pull funds.
-    if registry.is_trading_paused() {
-        msg!("Error: Trading is paused");
-        return Err(PercolatorError::OperationPaused.into());
-    }
-
+    // Reuse the registry reference read at the top of the function for
+    // the dynamic deposit (base * volatility_multiplier).
     let deposit = registry.deposit_amount();
 
     // Lock deposit against portfolio margin
@@ -258,5 +258,26 @@ mod tests {
         let amount = r.deposit_amount();
         // base_deposit=10M * volatility_multiplier=10000 / 10000 = 10M
         assert_eq!(amount, 10_000_000);
+    }
+
+    /// M7 7.8: `trading_paused` blocks `CommitOrder`. We can't construct
+    /// a real `AccountInfo` in a unit test (the `Account` struct is
+    /// `pub(crate)` in pinocchio), so this test pins the pattern the
+    /// entrypoint uses: a single bit-test before any state mutation,
+    /// returning `OperationPaused` (error code 602). The full
+    /// instruction call is exercised by the e2e lifecycle test under
+    /// BPF (gated on R4b).
+    #[test]
+    fn test_commit_order_trading_paused_pattern() {
+        use crate::state::registry::PAUSE_TRADING;
+        let mut r = Registry::new(Pubkey::from([7u8; 32]));
+        r.set_pause_flags(PAUSE_TRADING);
+        // The check inside `process_commit_order` is:
+        //   if registry.is_trading_paused() {
+        //       return Err(PercolatorError::OperationPaused.into());
+        //   }
+        assert!(r.is_trading_paused(), "trading_paused must be set");
+        let err: u64 = PercolatorError::OperationPaused.into();
+        assert_eq!(err, 602, "OperationPaused must map to error code 602");
     }
 }

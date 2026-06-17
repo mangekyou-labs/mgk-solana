@@ -25,21 +25,19 @@ pub fn process_reveal_order(
     salt: u64,
     batch_id: u64,
 ) -> ProgramResult {
-    if !user_account.is_signer() {
-        msg!("Error: User must be signer");
-        return Err(PercolatorError::Unauthorized.into());
-    }
-
-    // M7 7.8: governance emergency brake. Reject new reveals when
-    // `trading_paused` is set. Users with existing commitments are still
-    // affected (their commit hash is locked in the batch) but the reveal
-    // is what allows matching, so blocking it is the correct choke point.
-    let registry = unsafe {
-        &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry)
-    };
+    // M7 7.8: governance emergency brake. Trading pause blocks reveals
+    // (new order flow) but the existing batch can still be settled by
+    // the keeper (CloseCommitting / ClearBatch / SettleBatch are NOT
+    // gated by trading_paused).
+    let registry = unsafe { &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry) };
     if registry.is_trading_paused() {
         msg!("Error: Trading is paused");
         return Err(PercolatorError::OperationPaused.into());
+    }
+
+    if !user_account.is_signer() {
+        msg!("Error: User must be signer");
+        return Err(PercolatorError::Unauthorized.into());
     }
 
     // Validate portfolio ownership
@@ -286,5 +284,18 @@ mod tests {
             PercolatorError::RevealDeadlineExpired as u32, 600,
             "RevealDeadlineExpired must stay in the perps-core 600-699 range"
         );
+    }
+
+    /// M7 7.8: `trading_paused` blocks `RevealOrder`. See the
+    /// matching test in `commit_order.rs` for why we pin the pattern
+    /// here rather than call the full instruction.
+    #[test]
+    fn test_reveal_order_trading_paused_pattern() {
+        use crate::state::registry::PAUSE_TRADING;
+        let mut r = Registry::new(Pubkey::from([8u8; 32]));
+        r.set_pause_flags(PAUSE_TRADING);
+        assert!(r.is_trading_paused());
+        let err: u64 = PercolatorError::OperationPaused.into();
+        assert_eq!(err, 602);
     }
 }

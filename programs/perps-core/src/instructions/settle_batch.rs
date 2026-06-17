@@ -533,16 +533,17 @@ pub fn process_settle_batch(
     // this instrument. See `state/funding.rs` for the pure helpers and
     // design L504-553 for the formulas.
     //
-    // M7 7.8: governance can pause funding accrual via the
-    // `funding_paused` flag. The batch still settles (positions, fees,
-    // mark price), but the funding step is skipped — `cum_funding` and
-    // `last_funding_slot` are left untouched, and no portfolio payment
-    // is applied. When the pause is lifted, the next settle will resume
-    // accrual from the prior `last_funding_slot` (no time is "lost"; the
-    // `compute_funding_period` helper handles a multi-period catch-up).
-    if registry.is_funding_paused() {
-        msg!("SettleBatch: funding paused, skipping funding step");
-    } else {
+    // M7 7.8: governance can soft-skip funding by setting the
+    // `funding_paused` bit. The step is skipped (not errored) so
+    // `compute_funding_period` can catch up on the next non-paused
+    // batch — no time is "lost" because the SMA window naturally
+    // absorbs the gap. `instrument.cum_funding` and
+    // `instrument.last_funding_slot` are left untouched during a pause.
+    let funding_paused = unsafe {
+        (*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry))
+            .is_funding_paused()
+    };
+    if !funding_paused {
         apply_funding_to_instrument(instrument, &book, oracle_price, current_slot);
         let post_funding_cum = instrument.cum_funding;
         let instrument_id_for_funding = instrument.instrument_id;
@@ -1273,5 +1274,22 @@ mod tests {
     fn test_max_instruments_matches_array_size() {
         assert_eq!(MAX_INSTRUMENTS, 32);
         assert_eq!(MAX_POSITIONS, 32);
+    }
+
+    /// M7 7.8: `funding_paused` is a SOFT skip in `SettleBatch` — not
+    /// an error. The funding step is skipped entirely; `cum_funding`
+    /// and `last_funding_slot` are left untouched; the next non-paused
+    /// batch catches up via `compute_funding_period`. See the matching
+    /// test in `commit_order.rs` for why we pin the pattern here
+    /// rather than call the full instruction.
+    #[test]
+    fn test_settle_batch_funding_paused_pattern() {
+        let mut r = Registry::new(Pubkey::from([10u8; 32]));
+        r.set_pause_flags(crate::state::registry::PAUSE_FUNDING);
+        assert!(r.is_funding_paused());
+        // Unlike trading/withdrawals/liquidations, funding_paused does
+        // NOT return an error — it skips the funding step in place.
+        // The check pattern is `if !registry.is_funding_paused() {
+        // apply_funding_to_instrument(...); }`.
     }
 }

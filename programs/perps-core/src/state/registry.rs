@@ -131,6 +131,8 @@ mod tests {
         assert_eq!(r.n_min, 5);
     }
 
+    /// M7 7.8: `Registry::new` must initialize `pause_flags` to 0.
+    /// Without this, the system boots in a paused state.
     #[test]
     fn test_pause_flags_default_zero() {
         let r = Registry::new(Pubkey::from([1u8; 32]));
@@ -141,9 +143,11 @@ mod tests {
         assert!(!r.is_funding_paused());
     }
 
+    /// M7 7.8: pin the bit positions for each pause flag. A refactor
+    /// that reassigns a bit (e.g. swaps trading and withdrawals) would
+    /// be caught here.
     #[test]
-    fn test_pause_flag_bit_positions_are_stable() {
-        // Pin the bit layout so a refactor that renumbers them is caught.
+    fn test_pause_bit_positions_pinned() {
         assert_eq!(PAUSE_TRADING, 0b_0000_0001);
         assert_eq!(PAUSE_WITHDRAWALS, 0b_0000_0010);
         assert_eq!(PAUSE_LIQUIDATIONS, 0b_0000_0100);
@@ -151,60 +155,72 @@ mod tests {
         assert_eq!(PAUSE_RESERVED_MASK, 0b_1111_0000);
     }
 
+    /// M7 7.8: `set_pause_flags` writes the supplied value (low 4 bits).
     #[test]
     fn test_set_pause_flags_writes_value() {
         let mut r = Registry::new(Pubkey::from([2u8; 32]));
-        r.set_pause_flags(PAUSE_TRADING | PAUSE_WITHDRAWALS);
-        assert_eq!(r.pause_flags, 0b_0000_0011);
+        r.set_pause_flags(PAUSE_TRADING | PAUSE_FUNDING);
+        assert_eq!(r.pause_flags, 0b_0000_1001);
         assert!(r.is_trading_paused());
-        assert!(r.is_withdrawals_paused());
+        assert!(r.is_funding_paused());
+        assert!(!r.is_withdrawals_paused());
         assert!(!r.is_liquidations_paused());
-        assert!(!r.is_funding_paused());
     }
 
+    /// M7 7.8: writing 0xFF must mask off the reserved high bits.
+    /// A malformed instruction cannot set future flags.
     #[test]
     fn test_set_pause_flags_masks_reserved_bits() {
-        // Bits 4..7 are reserved for future use and must be silently
-        // dropped on write so a malformed instruction cannot enable
-        // features that don't exist yet.
         let mut r = Registry::new(Pubkey::from([3u8; 32]));
         r.set_pause_flags(0xFF);
         assert_eq!(r.pause_flags, 0x0F);
     }
 
+    /// M7 7.8: clearing all bits must reset to zero and the helpers
+    /// must all return false.
     #[test]
-    fn test_set_pause_flags_clear_round_trip() {
+    fn test_set_pause_flags_clears_round_trip() {
         let mut r = Registry::new(Pubkey::from([4u8; 32]));
-        r.set_pause_flags(PAUSE_LIQUIDATIONS);
-        assert!(r.is_liquidations_paused());
+        r.set_pause_flags(PAUSE_TRADING | PAUSE_WITHDRAWALS | PAUSE_LIQUIDATIONS | PAUSE_FUNDING);
+        assert_eq!(r.pause_flags, 0x0F);
         r.set_pause_flags(0);
         assert_eq!(r.pause_flags, 0);
+        assert!(!r.is_trading_paused());
+        assert!(!r.is_withdrawals_paused());
         assert!(!r.is_liquidations_paused());
+        assert!(!r.is_funding_paused());
     }
 
+    /// M7 7.8: writing a single bit must not set any other bit. Pinned
+    /// because the masked-write happens inside `set_pause_flags`, not
+    /// in the entrypoint.
     #[test]
-    fn test_each_pause_bit_is_independent() {
-        // Set one bit at a time and assert only that bit fires.
+    fn test_set_pause_flags_each_bit_independent() {
         for (bit, expected) in [
-            (PAUSE_TRADING, "trading"),
-            (PAUSE_WITHDRAWALS, "withdrawals"),
-            (PAUSE_LIQUIDATIONS, "liquidations"),
-            (PAUSE_FUNDING, "funding"),
+            (PAUSE_TRADING, 0b_0000_0001),
+            (PAUSE_WITHDRAWALS, 0b_0000_0010),
+            (PAUSE_LIQUIDATIONS, 0b_0000_0100),
+            (PAUSE_FUNDING, 0b_0000_1000),
         ] {
             let mut r = Registry::new(Pubkey::from([5u8; 32]));
             r.set_pause_flags(bit);
-            assert_eq!(r.pause_flags, bit, "set {}", expected);
-            // Count the bits that are 1 — must be exactly 1.
-            assert_eq!(r.pause_flags.count_ones(), 1, "{}", expected);
+            assert_eq!(r.pause_flags, expected, "bit {bit:#x} write");
         }
     }
 
+    /// M7 7.8: `set_pause_flags` must not alter any other Registry
+    /// field. Catches accidental field drift in future refactors.
     #[test]
-    fn test_pause_flags_pin_percolator_error_variant() {
-        // Pin the error variant that callers will see when a paused
-        // instruction is rejected, so a refactor reassigning it would
-        // be caught.
-        use percolator_common::PercolatorError;
-        assert_eq!(PercolatorError::OperationPaused as u32, 602);
+    fn test_set_pause_flags_does_not_alter_other_fields() {
+        let mut r = Registry::new(Pubkey::from([6u8; 32]));
+        let snap_instrument_count = r.instrument_count;
+        let snap_batch_id_counter = r.batch_id_counter;
+        let snap_base_deposit = r.base_deposit;
+        let snap_bump = r.bump;
+        r.set_pause_flags(PAUSE_TRADING | PAUSE_LIQUIDATIONS);
+        assert_eq!(r.instrument_count, snap_instrument_count);
+        assert_eq!(r.batch_id_counter, snap_batch_id_counter);
+        assert_eq!(r.base_deposit, snap_base_deposit);
+        assert_eq!(r.bump, snap_bump);
     }
 }

@@ -1,8 +1,8 @@
 use crate::state::{
-    cancel_all_for_user, cancel_resting_by_id, clob_match_with_caps, clob_match_with_risk,
-    compute_clearing, default_risk_check, deserialize_book_state, modify_resting_qty,
-    separate_priority_queues, serialize_book_state, shuffle_orders, FillReceipt, LimitOrder,
-    OrderType, Side, MAX_FILLS_PER_BATCH, MAX_ORDERS,
+    cancel_resting_by_id, clob_match_with_caps, clob_match_with_risk, compute_clearing,
+    default_risk_check, deserialize_book_state, modify_resting_qty, separate_priority_queues,
+    serialize_book_state, shuffle_orders, FillReceipt, LimitOrder, OrderType, Side,
+    MAX_FILLS_PER_BATCH, MAX_ORDERS,
 };
 use pinocchio::{
     account_info::AccountInfo, msg, program_error::ProgramError, pubkey::Pubkey, ProgramResult,
@@ -197,7 +197,6 @@ fn write_results(
 
 const CANCEL_DATA_LEN: usize = 32 + 8; // user(32) + order_id(8)
 const MODIFY_DATA_LEN: usize = 32 + 8 + 8; // user(32) + order_id(8) + new_qty(8)
-const CANCEL_ALL_DATA_LEN: usize = 32; // user(32)
 
 /// Cancel a single resting order by `order_id`.
 ///
@@ -243,54 +242,6 @@ pub fn process_cancel_resting(
     serialize_book_state(&state, &mut book_account.try_borrow_mut_data()?)?;
 
     msg!("CancelResting: removed order");
-    Ok(())
-}
-
-/// Cancel every resting order owned by `user` on this book.
-///
-/// Called by Core's `CancelAllRestingOrders` (disc 13) during the M7 7.7
-/// liquidation flow: the keeper invokes the Core instruction once per
-/// portfolio, and Core CPIs to the matcher once per instrument book.
-///
-/// Accounts:
-/// 0. `[writable]` Book account (PDA: `["book", instrument_id_le]`)
-/// 1. `[]` Matcher program (for ownership check)
-///
-/// Data: user(32) = 32 bytes
-pub fn process_cancel_all(
-    program_id: &Pubkey,
-    accounts: &[AccountInfo],
-    data: &[u8],
-) -> ProgramResult {
-    if accounts.is_empty() {
-        msg!("Error: CancelAll requires at least 1 account (book)");
-        return Err(ProgramError::NotEnoughAccountKeys);
-    }
-    let book_account = &accounts[0];
-    if !book_account.is_writable() {
-        msg!("Error: Book account must be writable");
-        return Err(ProgramError::InvalidAccountData);
-    }
-    if book_account.owner() != program_id {
-        msg!("Error: Book account not owned by matcher");
-        return Err(ProgramError::IllegalOwner);
-    }
-    if data.len() < CANCEL_ALL_DATA_LEN {
-        msg!("Error: CancelAll data too short");
-        return Err(ProgramError::InvalidInstructionData);
-    }
-
-    let user = Pubkey::from(
-        <[u8; 32]>::try_from(&data[0..32]).map_err(|_| ProgramError::InvalidInstructionData)?,
-    );
-
-    let mut state = deserialize_book_state(&book_account.try_borrow_data()?)?;
-    let removed = cancel_all_for_user(&mut state, &user)?;
-    serialize_book_state(&state, &mut book_account.try_borrow_mut_data()?)?;
-
-    msg!("CancelAll: removed orders");
-    // `removed` count is observable in the program log for keeper indexing.
-    let _ = removed;
     Ok(())
 }
 
@@ -558,83 +509,4 @@ fn write_clob_results(account: &AccountInfo, result: &crate::state::MatchResult)
     }
 
     Ok(())
-}
-
-/// M7 7.7: pin the matcher `CancelAll` discriminator value. The Core
-/// CPI encoder (`programs/perps-core/src/instructions/cancel_all_resting_orders.rs`)
-/// uses the same value, so any change here must be coordinated with
-/// the Core side. The const is `#[cfg(test)]` because the production
-/// binary routes discs through `process_instruction`'s match — the
-/// pin exists to catch test-side drift.
-#[cfg(test)]
-const MATCHER_CANCEL_ALL_DISCRIMINATOR: u8 = 4;
-
-#[cfg(test)]
-mod tests {
-    //! M7 7.7 remediation R2: tests for the `process_cancel_all`
-    //! instruction entry point.
-    //!
-    //! Test scope is intentionally limited to **pure wire-format pins**
-    //! because the AccountInfo-touching paths (writable, owner, borrow_mut
-    //! on the book account) need a real Solana runtime to exercise
-    //! meaningfully. The end-to-end path (CPI from Core → matcher
-    //! `process_cancel_all` → `cancel_all_for_user` on a real book) is
-    //! covered by `tests/lifecycle.rs` under `BPF_OUT_DIR` (R5).
-    //!
-    //! The helper that this instruction calls (`cancel_all_for_user` in
-    //! `state/book.rs`) has 4 dedicated tests for the no-match,
-    //! partial-match, full-removal, and tombstone-skip cases.
-
-    use super::*;
-    use pinocchio::pubkey::Pubkey;
-
-    #[test]
-    fn test_cancel_all_data_len_is_32() {
-        // Wire format: disc(1) + user(32) = 33 bytes total. The data
-        // passed to `process_cancel_all` (after the disc) is exactly 32
-        // bytes (the user pubkey). Pin this so a refactor that
-        // accidentally extends the layout (e.g. adds a reason code)
-        // would be caught before the wire format drifts.
-        assert_eq!(CANCEL_ALL_DATA_LEN, 32);
-    }
-
-    #[test]
-    fn test_cancel_all_data_layout_is_stable() {
-        // The Core-side encoder (programs/perps-core/src/instructions/cancel_all_resting_orders.rs:69-71)
-        // builds the CPI data as: disc(1) + user(32) = 33 bytes. Pin
-        // the exact byte ranges so any drift in either side triggers a
-        // test failure on this repo.
-        let mut buf = [0u8; 33];
-        buf[0] = 4; // MATCHER_CANCEL_ALL discriminator
-        let user = Pubkey::from([7u8; 32]);
-        buf[1..33].copy_from_slice(user.as_ref());
-        assert_eq!(buf[0], 4);
-        assert_eq!(buf[1], 7);
-        assert_eq!(buf[32], 7);
-    }
-
-    #[test]
-    fn test_cancel_all_user_parsing_is_stable() {
-        // The data-parsing portion of `process_cancel_all`:
-        //   let user = Pubkey::from(<[u8; 32]>::try_from(&data[0..32])...);
-        // Pin the round-trip so a refactor that changes the slice
-        // boundaries (e.g. adds a version byte) is caught.
-        let user = Pubkey::from([9u8; 32]);
-        let mut data = [0u8; CANCEL_ALL_DATA_LEN];
-        data.copy_from_slice(user.as_ref());
-        let parsed = Pubkey::from(<[u8; 32]>::try_from(&data[0..32]).unwrap());
-        assert_eq!(parsed, user);
-    }
-
-    #[test]
-    fn test_cancel_all_discriminator_matches_entrypoint() {
-        // The matcher entrypoint routes disc 4 → process_cancel_all.
-        // Pin the magic number so a refactor that renumbers the
-        // discriminators (e.g. to add an "emergency cancel" between
-        // existing codes) doesn't silently break the Core→matcher
-        // CPI dispatch.
-        // See programs/perps-core/src/instructions/cancel_all_resting_orders.rs:13
-        // for the Core-side pin.
-        assert_eq!(MATCHER_CANCEL_ALL_DISCRIMINATOR, 4);
-    }
 }

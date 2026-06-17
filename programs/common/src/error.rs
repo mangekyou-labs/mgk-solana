@@ -75,6 +75,19 @@ pub enum PercolatorError {
     OperationPaused = 602,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin the M7.8 error variant's discriminator so a refactor that
+    /// reassigns it is caught. See `state::registry` for the pause-flag
+    /// pattern that produces this error.
+    #[test]
+    fn test_operation_paused_error_pinned_to_perps_core_range() {
+        assert_eq!(PercolatorError::OperationPaused as u32, 602);
+    }
+}
+
 impl From<PercolatorError> for u64 {
     fn from(e: PercolatorError) -> u64 {
         e as u64

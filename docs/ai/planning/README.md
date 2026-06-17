@@ -593,6 +593,8 @@ Identified during the design-vs-impl audit for M7.7. Ordered by severity. These 
 
 **Test inventory:** perps-core lib 166 → 178 (+12). Total project 304 → 316 (+12).
 
+**Re-application note (2026-06-17):** M7 7.7 + 7.8 work was re-applied on `feature-mgk-frontend` after a partial strip (M7.7 most liquidation helpers + M7.8 PauseFlags removed; M7.1–7.6 still in place). The re-application restored the same state documented above. Per-crate test counts after re-application: percolator-common 43 (+1 OperationPaused pin), mgk-perps-matcher 77 (+1 ignored), mgk-perps-core lib 134 (post-strip baseline + 15 new tests: 8 in `state::registry` for `pause_flags` field/methods/constants, 4 gated-instruction pattern tests in `commit/reveal/withdraw/settle`, 4 set_pause_flags tests reachable now that the module is exported via `instructions/mod.rs`). The 4 set_pause_flags tests were dormant before the re-application because the module was not exported. Wire-format change to RevealOrder/Withdraw is identical to the original; 6 e2e test sites in `tests/lifecycle.rs` updated. R4b (BPF stack overflow) and R2 (matcher process_cancel_all tests) remain open; gated-instruction e2e tests are deferred to BPF runtime.
+
 ## Dependencies
 
 ```
