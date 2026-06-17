@@ -1,7 +1,7 @@
 ---
 phase: design
 title: mgk Frontend — System Design & Architecture
-description: Subsystem of mgk protocol. Next.js 15 SPA + standalone Node indexer; raw-byte Pinocchio encoders; Lightweight Charts with Pyth backdrop and mgk trade overlay
+description: Subsystem of mgk protocol. Next.js 15 SPA + standalone Node indexer; raw-byte Pinocchio encoders; TradingView Advanced Chart widget with BINANCE data + mgk trade markers from indexer WS
 ---
 
 # mgk Frontend — System Design & Architecture
@@ -17,7 +17,7 @@ graph TD
     subgraph Browser
         UI[Next.js 15 App<br/>App Router, TS strict, Tailwind]
         WA[Wallet Adapter<br/>Phantom / Solflare / Backpack]
-        LWC[Lightweight Charts<br/>Pyth candles + mgk trade overlay]
+        LWC[TradingView Widget<br/>BINANCE candles + mgk trade markers]
         SDK[mgk-sdk package<br/>PDA derivation, raw-byte ix encoders<br/>state decoders]
     end
 
@@ -39,7 +39,6 @@ graph TD
     UI -->|reads/writes| SDK
     UI -->|getMultipleAccounts| CORE
     UI -->|chart history + live trades| API
-    LWC -->|OHLCV subscribe| PYTH
     SUB -->|program / account updates| CORE
     SUB -->|program updates| MATCH
     SUB -->|price updates| PYTH
@@ -54,7 +53,7 @@ graph TD
 - **No Anchor.** mgk has no IDL, so `@coral-xyz/anchor` cannot be used for instruction building. We hand-write the encoders using `@solana/web3.js` `TransactionInstruction` with `Buffer.concat`.
 - **Direct RPC from the browser** for reads that need to be fresh (portfolio, batch state). HTTP polling via `connection.getMultipleAccountsInfo` every 2–5s; no separate "RPC proxy" service in the path.
 - **Indexer for history and live fan-out.** Aggregated historical candles (1m, 5m, 1h) and a persistent trade feed live in SQLite. The indexer fans out a WebSocket so multiple browser tabs do not all hit RPC.
-- **Pyth backdrop via Hermes HTTP.** Lightweight Charts does its own XHR; we do not proxy Pyth through the indexer. If Hermes is down, fall back to the on-chain `percolator-oracle` for the latest price.
+- **TradingView widget for chart.** TradingView's free Advanced Chart widget loads BINANCE:SOLUSDT data by default, providing a production-quality chart with crosshair, OHLCV, volume, and timeframe switching out of the box. The widget is loaded from CDN (`tv.js`), deduplicated across the app, and themed to the Sharingan palette (`#0a0a0a` bg, `#1f1f1f` grid). Custom mgk trade markers are overlaid from the indexer WS. The widget avoids the Lightweight Charts' limitation of no built-in OHLCV/volume/crosshair, and the `BINANCE:*` symbol is our data source until mgk has enough devnet volume for a self-hosted data feed.
 
 ## Reference UI & Visual Identity
 
@@ -203,9 +202,9 @@ mgk-frontend/apps/web/components
 │   ├── MarketSelector.tsx            # dropdown — SOL-USD only in v1, but renders future-ready
 │   └── StatPill.tsx                  # "Last Price 150.40", "Oracle 150.38", "Batch 00:24:40"
 ├── chart/
-│   ├── PriceChart.tsx                # Lightweight Charts wrapper, timeframe + view-mode tabs
+│   ├── PriceChart.tsx                # TradingView widget wrapper, timeframe + view-mode tabs
 │   ├── ChartToolbar.tsx              # 1m/5m/15m/1H/4H/1D, Indicators button, Mark/Oracle toggle, Chart/Depth/Market Info toggle
-│   ├── usePythCandles.ts             # Hermes HTTP fetch + WS subscription
+│   ├── TradingViewWidget.tsx         # Free Advanced Chart widget (BINANCE data, dark palette)
 │   └── useMgkTradeMarkers.ts         # overlay fills from indexer WS as up/down triangle markers
 ├── trade/
 │   ├── OrderBook.tsx                 # bids/asks with depth bars and B/S imbalance footer
@@ -496,8 +495,8 @@ mgk-frontend/apps/web/components
 │   ├── WalletProvider.tsx
 │   └── useAutoConnect.ts
 ├── chart/
-│   ├── PriceChart.tsx                # Lightweight Charts wrapper
-│   ├── usePythCandles.ts             # Hermes HTTP fetch + WS subscription
+│   ├── PriceChart.tsx                # TradingView widget wrapper
+│   ├── TradingViewWidget.tsx         # Free Advanced Chart widget (tv.js CDN, BINANCE data)
 │   └── useMgkTradeMarkers.ts         # overlay fills from indexer WS
 ├── trade/
 │   ├── OrderPanel.tsx                # buy/sell, price, qty, leverage, submit
@@ -567,9 +566,11 @@ Most app state is ephemeral and synchronous (form, current batch, wallet). React
 
 The on-chain protocol is the source of truth: the salt + batch_id + commitment hash must come from the user's wallet/session, not a server, otherwise we centralize MEV. The UI generates a CSPRNG salt, derives the hash client-side, and persists `{salt, batch_id, hash, side, price, qty, instrumentId}` to localStorage between Commit and Reveal so a refresh does not strand the order.
 
-### Why Lightweight Charts and not Charting Library
+### Why TradingView widget and not Lightweight Charts
 
-The Charting Library needs GitHub approval and a signed license. For a devnet MVP with one market, Lightweight Charts is enough and we keep the option to swap later (we hide chart behind `<PriceChart/>` so the migration is local).
+The TradingView Advanced Chart widget provides a production-quality chart experience out of the box: OHLCV candles, volume histogram, crosshair tooltip, timeframe switching, and zoom/pan — features that would require significant custom implementation in Lightweight Charts. The free widget (`tv.js` from CDN) is available without a signed license agreement for non-commercial devnet use. The widget loads `BINANCE:SOLUSDT` data as the default symbol, giving a real-looking chart from first load. Custom mgk trade markers are overlaid from the indexer WebSocket feed. The widget is wrapped in `<TradingViewWidget/>` so a migration to a self-hosted data feed or a different charting library is local to one component.
+
+**Trade-off:** The widget shows centralized exchange data (BINANCE) rather than the on-chain Pyth price feed. For devnet MVP with one market and low volume, this is acceptable — the chart shows realistic price action, and mgk's own trade markers are overlaid as the protocol generates fills. A post-v1 task would pipe Pyth Hermes candles as the primary data source once mgk has sufficient devnet volume.
 
 ### Why direct RPC + Helius fallback (no custom RPC proxy)
 
