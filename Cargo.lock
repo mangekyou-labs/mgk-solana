@@ -2393,7 +2393,6 @@ dependencies = [
 name = "mgk-perps-core"
 version = "0.1.0"
 dependencies = [
- "mgk-perps-matcher",
  "percolator-common",
  "pinocchio",
  "pinocchio-pubkey",
@@ -2407,6 +2406,7 @@ dependencies = [
 name = "mgk-perps-matcher"
 version = "0.1.0"
 dependencies = [
+ "percolator-common",
  "pinocchio",
  "pinocchio-pubkey",
 ]

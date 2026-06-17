@@ -1,7 +1,7 @@
 use crate::instructions::commit_order::compute_commitment_hash;
 use crate::state::order::{OrderType, Side};
 use crate::state::{
-    Batch, BatchStatus, Commitment, CommitmentStatus, Portfolio, RevealedOrder,
+    Batch, BatchStatus, Commitment, CommitmentStatus, Portfolio, Registry, RevealedOrder,
 };
 use percolator_common::PercolatorError;
 use pinocchio::{
@@ -15,6 +15,7 @@ pub fn process_reveal_order(
     user_account: &AccountInfo,
     portfolio_account: &AccountInfo,
     batch_account: &AccountInfo,
+    registry_account: &AccountInfo,
     order_type: u8,
     instrument_id: u16,
     reduce_only: bool,
@@ -27,6 +28,18 @@ pub fn process_reveal_order(
     if !user_account.is_signer() {
         msg!("Error: User must be signer");
         return Err(PercolatorError::Unauthorized.into());
+    }
+
+    // M7 7.8: governance emergency brake. Reject new reveals when
+    // `trading_paused` is set. Users with existing commitments are still
+    // affected (their commit hash is locked in the batch) but the reveal
+    // is what allows matching, so blocking it is the correct choke point.
+    let registry = unsafe {
+        &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry)
+    };
+    if registry.is_trading_paused() {
+        msg!("Error: Trading is paused");
+        return Err(PercolatorError::OperationPaused.into());
     }
 
     // Validate portfolio ownership

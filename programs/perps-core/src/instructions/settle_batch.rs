@@ -532,14 +532,26 @@ pub fn process_settle_batch(
     // the resulting payment to every portfolio holding a position in
     // this instrument. See `state/funding.rs` for the pure helpers and
     // design L504-553 for the formulas.
-    apply_funding_to_instrument(instrument, &book, oracle_price, current_slot);
-    let post_funding_cum = instrument.cum_funding;
-    let instrument_id_for_funding = instrument.instrument_id;
-    for portfolio_account in portfolio_accounts.iter() {
-        let portfolio = unsafe {
-            &mut *(portfolio_account.borrow_mut_data_unchecked().as_ptr() as *mut Portfolio)
-        };
-        apply_funding_to_portfolio(portfolio, instrument_id_for_funding, post_funding_cum);
+    //
+    // M7 7.8: governance can pause funding accrual via the
+    // `funding_paused` flag. The batch still settles (positions, fees,
+    // mark price), but the funding step is skipped — `cum_funding` and
+    // `last_funding_slot` are left untouched, and no portfolio payment
+    // is applied. When the pause is lifted, the next settle will resume
+    // accrual from the prior `last_funding_slot` (no time is "lost"; the
+    // `compute_funding_period` helper handles a multi-period catch-up).
+    if registry.is_funding_paused() {
+        msg!("SettleBatch: funding paused, skipping funding step");
+    } else {
+        apply_funding_to_instrument(instrument, &book, oracle_price, current_slot);
+        let post_funding_cum = instrument.cum_funding;
+        let instrument_id_for_funding = instrument.instrument_id;
+        for portfolio_account in portfolio_accounts.iter() {
+            let portfolio = unsafe {
+                &mut *(portfolio_account.borrow_mut_data_unchecked().as_ptr() as *mut Portfolio)
+            };
+            apply_funding_to_portfolio(portfolio, instrument_id_for_funding, post_funding_cum);
+        }
     }
 
     // M7 7.6 (decision D2): post-hoc margin check. After all fills +

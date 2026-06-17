@@ -50,10 +50,10 @@
 
 ## Build Status
 
-- **Current milestone**: M7 (Pre-Testnet Criticals) in progress. 7.1 (Batch Creation), 7.2 (Commitment Deposit Return), 7.3 (Reveal Deadline Enforcement), 7.5 (Mark Price) done.
-- **Milestones completed**: M1, M3, M4, M5, M6 (6a-6k), M7.1, M7.2, M7.3, M7.5
-- **MVP complete**: Yes (commit-reveal + CLOB + liquidation + next-batch creation + deposit return + reveal deadline + mark price end-to-end on host; BPF interop sanity-checked via `lifecycle.rs`)
-- **Tests passing**: 181 (1 ignored BPF-only test)
+- **Current milestone**: M7.8 (PauseFlags) done. MVP feature-complete. Next: M7.7.R cleanup (R2 tests, R4b BPF stack fix, R6 doc, R8 commit) before devnet redeploy.
+- **Milestones completed**: M1, M3, M4, M5, M6 (6a-6k), M7.1, M7.2, M7.3, M7.4, M7.5, M7.6, M7.7, M7.8
+- **MVP complete**: Yes (commit-reveal + CLOB + liquidation + next-batch creation + deposit return + reveal deadline + mark price + funding + risk callback + liquidation safety + pause flags end-to-end on host; BPF interop gated on R4b stack fix)
+- **Tests passing**: 316 (1 ignored BPF-only test)
 - **Clippy**: clean
 - **Devnet deployed**: No
 - **Program IDs**: placeholders registered in `programs/common/src/program_ids.rs`
@@ -63,10 +63,10 @@
 |---|---|
 | `percolator-common` | 42 |
 | `percolator-oracle` | 5 |
-| `mgk-perps-matcher` | 68 (+ 1 ignored) |
-| `mgk-perps-core` (lib) | 62 |
-| `mgk-perps-core/tests/lifecycle.rs` | 4 e2e (gated on `BPF_OUT_DIR`) |
-| **Total** | **181 passing, 1 ignored** |
+| `mgk-perps-matcher` | 85 (+ 1 ignored) |
+| `mgk-perps-core` (lib) | 177 |
+| `mgk-perps-core/tests/lifecycle.rs` | 7 e2e (gated on `BPF_OUT_DIR`) |
+| **Total** | **316 passing, 1 ignored** |
 
 ### Testing doc
 - `docs/ai/testing/feature-mgk-onchain-perps-dex.md` — recreated 2026-06-16 after 2025-06-15 strip deleted it

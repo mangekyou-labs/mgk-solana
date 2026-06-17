@@ -411,15 +411,17 @@ struct FallbackPrice {
 | `1` | InitPortfolio | — | portfolio_pda, user, payer | User signer |
 | `2` | Deposit | lamports | portfolio, vault, user_wallet | User signer |
 | `3` | Withdraw | lamports | portfolio, vault, registry, user_wallet | User signer |
-| `4` | CommitOrder | hash(order_type\|side\|price\|qty\|salt\|user\|batch_id) | portfolio, batch, commitment, user | User signer |
-| `5` | RevealOrder | order_type, side, price, qty, salt, reduce_only | portfolio, batch, commitment, user | User signer |
+| `4` | CommitOrder | hash(order_type\|side\|price\|qty\|salt\|user\|batch_id) | portfolio, batch, registry, commitment, user | User signer |
+| `5` | RevealOrder | order_type, side, price, qty, salt, reduce_only | portfolio, batch, registry, commitment, user | User signer |
 | `6` | CloseCommitting | batch_id | batch, registry | Permissionless |
-| `7` | ClearBatch | batch_id | batch, matching_engine, book, user_portfolios[], registry | Permissionless (crank) |
-| `8` | SettleBatch | batch_id | batch, portfolios[], commitments[], vault, oracle_feeds[] | Permissionless |
-| `9` | LiquidateUser | user_pubkey | portfolio, registry, book, vault, oracle_feeds[] | Permissionless (keeper) |
+| `7` | ClearBatch | batch_id, num_commitments, num_instruments, num_portfolios | batch, book, results, matcher_program, registry, instrument_accounts[], commitment_accounts[], portfolio_accounts[] | Permissionless (crank) |
+| `8` | SettleBatch | batch_id, num_commitments, num_portfolios | batch, registry, vault, results, instrument, book, oracle, matcher_program, commitment_accounts[], portfolio_accounts[], next_batch | Permissionless |
+| `9` | LiquidateUser | user_pubkey, num_instruments | portfolio, registry, vault, liquidator, instrument_accounts[], oracle | Permissionless (keeper) |
 | `A` | AddInstrument | instrument_params | registry, instrument, oracle_feed | Governance |
 | `B` | CancelRestingOrder | order_id | portfolio, book, user | User signer |
 | `C` | ModifyRestingOrder | order_id, new_qty | portfolio, book, user | User signer |
+| `D` | CancelAllRestingOrders | num_books | portfolio, user, matcher_program, book_accounts[] | User signer |
+| `E` | SetPauseFlags | flags(1) | registry, governance | Governance |
 
 ### Matching Engine Program Instructions
 

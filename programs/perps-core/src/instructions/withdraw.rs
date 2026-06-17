@@ -1,4 +1,4 @@
-use crate::state::{Portfolio, Vault};
+use crate::state::{Portfolio, Registry, Vault};
 use percolator_common::PercolatorError;
 use pinocchio::{
     account_info::AccountInfo,
@@ -6,7 +6,9 @@ use pinocchio::{
     ProgramResult,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub fn process_withdraw(
+    registry: &Registry,
     _portfolio_account: &AccountInfo,
     portfolio: &mut Portfolio,
     user_account: &AccountInfo,
@@ -22,6 +24,15 @@ pub fn process_withdraw(
     if !user_account.is_signer() {
         msg!("Error: User must be a signer");
         return Err(PercolatorError::Unauthorized.into());
+    }
+
+    // M7 7.8: governance emergency brake. Withdrawals can be paused to
+    // halt a bank run or a malicious-key drain. Deposits stay open so
+    // users can still fund defensive positions if the protocol is in a
+    // paused-but-recovering state.
+    if registry.is_withdrawals_paused() {
+        msg!("Error: Withdrawals are paused");
+        return Err(PercolatorError::OperationPaused.into());
     }
 
     if portfolio.user != *user_account.key() {

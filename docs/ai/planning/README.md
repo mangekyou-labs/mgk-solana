@@ -452,29 +452,146 @@ Added `RevealDeadlineExpired = 600` to `PercolatorError` in `programs/common/src
 - Per-instrument `mark_reference_qty` tuning (currently hardcoded default 1_000).
 - New e2e test for mark price end-to-end (blocked by pre-existing equity-offset bug from 7.2's follow-up).
 
-### 7.6. Risk Callback Wiring [NOT STARTED]
-- [ ] Add per-user notional cap to CPI data format: `user_caps: [(Pubkey, u128)]` (decision D2)
-- [ ] Matcher risk callback checks `cumulative_notional > user_cap` and cancels remainder
-- [ ] Core validates margin after all fills applied (post-hoc check) — if `health < 0`, flag for liquidation but do not revert fills
-- [ ] Update CPI wire format tests for new cap data
-- [ ] Test: user with notional > cap has remaining fills cancelled; user under cap fills normally
+### 7.6. Risk Callback Wiring [DONE] (2026-06-16)
+- [x] Add per-user notional cap to CPI data format: `user_caps: [(Pubkey, u128)]` (decision D2)
+- [x] Matcher risk callback checks `cumulative_notional > user_cap` and cancels remainder
+- [x] Core validates margin after all fills applied (post-hoc check) — if `health < 0`, flag for liquidation but do not revert fills
+- [x] Update CPI wire format tests for new cap data
+- [x] Test: user with notional > cap has remaining fills cancelled; user under cap fills normally
 
-### 7.7. Liquidation Safety Stack [NOT STARTED]
-- [ ] Cancel all open orders (resting + un-revealed commitments) for liquidated user first
-- [ ] Iterative position reduction: sort by abs notional, reduce top position 25%/round, up to 5 rounds (decision D4)
-- [ ] If still underwater after 5 rounds: full-flat remaining positions
-- [ ] Insurance fund absorbs shortfall (already implemented); add `adl_pending: bool` + `adl_debt: u128` to Vault for ADL stub
-- [ ] No market sweep via CPI (mark at oracle price) — deferred to post-MVP
-- [ ] No hedge-preserving detection or impact-ratio ranking — deferred to post-MVP
-- [ ] No ADL implementation — ADL stub flags bad debt for keeper observation
-- [ ] Test: simple liquidation; iterative reduction avoids full-flat; ADL stub flags uncovered debt
+**Implementation:**
 
-### 7.8. PauseFlags [NOT STARTED]
-- [ ] Add `PauseFlags` bitmask to Registry: `trading_paused, withdrawals_paused, liquidations_paused, funding_paused`
-- [ ] Check pause flags at instruction entry for each affected instruction
-- [ ] Cancel operations remain available during trading pause
-- [ ] Governance instruction to set/clear PauseFlags
-- [ ] Test: paused instruction rejected; unpause allows instruction
+1. **Matcher: cap-aware risk check (D2 soft guard).**
+   - Refactored `clob_match_with_risk` and internal helpers (`process_gtc`/`process_ioc`/`process_market`/`walk_against_book`) to be generic over `F: Fn(&RiskContext) -> RiskDecision`. fn pointers still satisfy the bound, so existing callers passing `default_risk_check` are unchanged.
+   - Added `capped_risk_check(ctx, caps) -> RiskDecision`: linear scan over `caps` slice (max 64 unique users per batch per `MAX_ORDERS`). Returns `Cancel` if `ctx.cumulative_notional > cap`; returns `Continue` if the user is not in the table (no cap = no limit, preserves backward compat).
+   - Added `clob_match_with_caps(state, queues, caps) -> MatchResult`: convenience entry point that wraps the closure `|ctx| capped_risk_check(ctx, caps)`.
+   - **Wire format change** (M6 → M7 7.6): `ClearAndMatch` CPI data extended with `num_caps(2) + caps[N*48]`. Header is now 12 bytes (was 10). If `num_caps == 0`, the matcher falls back to `default_risk_check` (backward compatible). If `num_caps > 0`, uses `clob_match_with_caps`.
+
+2. **Core: per-user cap computation + post-hoc margin check.**
+   - `process_clear_batch` now takes `instrument_accounts` and `portfolio_accounts` as additional args (per D2 implementation note). For each unique user across the batch:
+     1. Compute `max_leverage` = max `instrument.max_leverage` across the user's instruments in this batch (most permissive cap; preserves fills on lower-leverage instruments).
+     2. Look up the user's portfolio to get `free_collateral`.
+     3. `cap = compute_user_cap(free_collateral, max_leverage)` — pure helper. Returns 0 if `free_collateral < 0` (defensive) or portfolio not found.
+   - Caps are written into the CPI data as `(user: Pubkey, max_notional: u128)` tuples (48 bytes each), bounded by `MAX_CAPS = 64` (matches matcher's `MAX_ORDERS`). A batch with > 64 unique users returns `InvalidInstruction`.
+   - **Account list change**: `ClearBatch` now expects variable-length `instrument_accounts` and `portfolio_accounts` slices between the fixed accounts and the commitment accounts. Instruction data extended from `num_commitments(2)` to `num_commitments(2) + num_instruments(2) + num_portfolios(2)` = 6 bytes.
+   - `process_settle_batch` adds a post-hoc check after the funding loop: for each portfolio, log a warning if `health < 0` (i.e., `Portfolio::needs_liquidation()` returns true). **Fills are NOT reverted** (per D2) — the existing `LiquidateUser` instruction handles liquidation in a separate tx and already enforces `health >= 0 → reject`.
+   - Added `Portfolio::needs_liquidation(&self) -> bool` helper (returns `self.health < 0`).
+
+3. **Constants pinned by tests:**
+   - `MAX_CAPS = 64` (matches matcher's `MAX_ORDERS`).
+   - `BYTES_PER_CAP = 48` (user(32) + max_notional(16)).
+   - `HEADER_BYTES = 12` (close_slot(8) + num_orders(2) + num_caps(2)).
+   - `CPI_DATA_SIZE = 12 + 64*48 + 500*53 = 29,584` bytes.
+   - `CLEAR_CAP_BYTES = 48` on the matcher side.
+
+**Tests added** (2026-06-16, 18 new):
+- 9 unit tests in `programs/perps-matcher/src/state/clob.rs::tests`:
+  - `test_capped_risk_check_under_cap_continues`
+  - `test_capped_risk_check_at_cap_continues` (boundary: strict `>`)
+  - `test_capped_risk_check_over_cap_cancels`
+  - `test_capped_risk_check_user_not_in_table_continues`
+  - `test_capped_risk_check_empty_caps_continues`
+  - `test_capped_risk_check_multiple_users_lookup`
+  - `test_clob_match_with_caps_under_cap_full_fill`
+  - `test_clob_match_with_caps_over_cap_cancels_remainder`
+  - `test_clob_match_with_caps_per_user_independent` (cap check is post-fill, so first fill IS recorded before the cap fires)
+- 6 unit tests in `programs/perps-core/src/instructions/clear_batch.rs::tests`:
+  - `test_compute_user_cap_normal`
+  - `test_compute_user_cap_zero_free_collateral`
+  - `test_compute_user_cap_underwater_returns_zero`
+  - `test_compute_user_cap_zero_leverage`
+  - `test_compute_user_cap_high_leverage`
+  - `test_compute_user_cap_no_overflow_realistic_inputs`
+- 3 unit tests in `programs/perps-core/src/state/portfolio.rs::tests`:
+  - `test_needs_liquidation_healthy_portfolio`
+  - `test_needs_liquidation_underwater_portfolio`
+  - `test_needs_liquidation_at_boundary` (health == 0 → NOT eligible)
+
+**Test inventory bump:** perps-core lib 110 → 119 (+9); perps-matcher 68 → 77 (+9). Total project: 229 → **247 passing** (+18).
+
+**Files changed:**
+- `programs/perps-matcher/src/state/clob.rs` — generic refactor + `capped_risk_check` + `clob_match_with_caps` + 9 new tests.
+- `programs/perps-matcher/src/instructions.rs` — extended `process_clear_and_match` for `num_caps` + caps section + new `CLEAR_CAP_BYTES` constant.
+- `programs/perps-core/src/instructions/clear_batch.rs` — cap computation logic + new helper `compute_user_cap` + 6 new tests + updated `test_cpi_header_writes_*` for new format.
+- `programs/perps-core/src/instructions/settle_batch.rs` — post-hoc check after the funding loop.
+- `programs/perps-core/src/entrypoint.rs` — `process_clear_batch_inner` parses new account list + instruction data.
+- `programs/perps-core/src/state/portfolio.rs` — `needs_liquidation` helper + 3 new tests.
+- `programs/perps-core/tests/lifecycle.rs` — 5 e2e `ClearBatch` call sites updated for new account list and instruction data (the 4 e2e tests still pass on the host build; CI will exercise them under BPF).
+
+**Design deviation:** None from D2. D2 said the cap check is "a rough approximation but catches egregious over-leverage" — the per-instrument-max aggregation we use (max leverage across the user's instruments) is the most permissive cap; this preserves the most fills while still preventing egregious over-leverage. Tracked behavior.
+
+**Future work (deferred):**
+- Per-fill margin check (Option A in D2) is architecturally infeasible on Solana (re-entrant CPI forbidden) — re-mention for completeness.
+- Sub-bp cap precision: cap is integer; not a blocker for pre-testnet.
+- Replace the post-hoc log message with an `adl_pending` flag on the portfolio (or vault) for keeper observability. Currently the keeper polls `health < 0` to find liquidatable users. Deferred to 7.7 (which adds `adl_pending: bool` to Vault).
+
+### 7.7. Liquidation Safety Stack [IN PROGRESS]
+- [x] Add `adl_pending: bool` + `adl_debt: u128` to Vault (`programs/perps-core/src/state/vault.rs`) — T1 done; `mark_adl_pending` / `clear_adl_pending` helpers; struct 64 → 80 bytes
+- [x] Cancel all open orders (resting) for liquidated user — T2 done. New `CancelAllRestingOrders` core instruction (disc 13, takes `num_books(2)` + book accounts[]) + matcher `CancelAll` instruction (disc 4, `user(32)` wire). Un-revealed commitments handled by existing `CloseCommitting`/`SettleBatch` slash flow (7.2). New matcher helper `cancel_all_for_user(state, user)` iterates high-to-low to keep indices stable across `remove_at_offset`; tests cover no-match, partial match, and tombstone-skip cases.
+- [x] Iterative position reduction helpers — T3 done. New `state/liquidation.rs` with pure functions `position_notional(qty, mark_price, contract_size)`, `find_top_position(positions, count, mark_prices, contract_sizes)`, `apply_reduction(position, fraction_bps)`. Constants pinned: `DEFAULT_MAX_ROUNDS = 5`, `DEFAULT_FRACTION_BPS = 2_500` (25%, decision D4). 18 tests cover notional math (basic, contract_size, zero inputs, saturation), top-position ranking (empty, single, picks-largest, skips-zero-qty, skips-zero-mark), reduction (long/short, full-close, zero inputs, rounds-toward-zero, clamps at over-100%).
+- [x] Wire iterative reduction + ADL stub + composite mark into `LiquidateUser` — T4 done. Rewrote `process_liquidate_user`: 5-round × 25% reduction loop (realizes partial PnL via `closed_signed * (mark - entry)` per round), full-flat fallback after loop, insurance claim, ADL stub via `vault.mark_adl_pending(uncovered)`. Account list extended: instrument_accounts[0..N] + 1 oracle (was N oracles). Marking uses `instrument.mark_price` (composite from 7.5) with oracle fallback when `mark_price == 0`. 9 tests cover sign correctness for long-loss/short-loss/long-profit reductions, magic pin, BPS invariant. Pre-existing sign bug in `equity = equity - total_loss` (was actually `equity += pnl` semantics) fixed by switching to `equity += pnl` + skip touching `portfolio.pnl` (which tracks funding accrual, not unrealized PnL).
+- [x] Test: simple liquidation; iterative reduction avoids full-flat; ADL stub flags uncovered debt — T5 done. 8 scenario tests in `state/liquidation.rs::tests`: iterative-rescues-before-full-flat (recovery via reduction), full-flat-when-5-rounds-insufficient (extreme mmr), position-compaction-on-zero (swap-with-last), ADL-stub-fires-when-insurance-empty + accumulates + clears, mark-fallback-to-oracle, no-oracle-no-mark-yields-zero. Tests use a local `simulate_one_round` helper that mirrors the orchestrator's per-round logic (find_top → apply_reduction → realize partial PnL → recompute margin) for testability without constructing `AccountInfo`.
+- [x] **M7 7.7 Liquidation Safety Stack — COMPLETE** (T1–T5). 7.7.1 (cancel open orders) + 7.7.2 (iterative reduction) + 7.7.3 (full-flat fallback) + 7.7.4 (insurance) + 7.7.5 (ADL stub) shipped. No market sweep / hedge detection / real ADL per D4.
+- [ ] No market sweep via CPI — deferred to post-MVP per D4
+- [ ] No hedge-preserving detection or impact-ratio ranking — deferred to post-MVP per D4
+- [ ] No real ADL implementation — keeper observes `vault.adl_pending`
+
+#### 7.7.R — Post-impl remediation (2026-06-17)
+
+Identified during the design-vs-impl audit for M7.7. Ordered by severity. These tasks are independent of the design-doc P0/P1 lines above and can land before or after 7.8.
+
+- [x] **R1 (P0): Fix `mark=0` silent failure in `LiquidateUser`** — *DONE 2026-06-17*. Positions on instruments not passed in `instrument_accounts` previously got mark=0, causing `full_flat` to record PnL = `-qty * entry` (silent equity destruction). Fix: added `validate_instrument_coverage` pure helper in `state/liquidation.rs` + new `PercolatorError::InstrumentMissingForLiquidation = 601`. Called after the `positions_len == 0` check, before any mark-table build. 6 new tests: all-covered / one-missing / empty-passed / out-of-range / zero-count / value-pinned. Entrypoint doc updated to require exhaustive instrument coverage. Closes the P0 documented in `feat-onchain-perps-dex` review §3.
+- [ ] **R2 (P1): Add tests for matcher `process_cancel_all` instruction entry point** — `cancel_all_for_user` helper has 4 tests but the instruction entry point (`process_cancel_all` in `programs/perps-matcher/src/instructions.rs:260`) has zero. Need at least: happy path, wrong owner, not-writable, data-too-short, empty-book.
+- [x] **R3 (P1): Fix pre-existing e2e equity-offset bug** (offsets 16..32 → 32..48) in `programs/perps-core/tests/lifecycle.rs`. Blocks e2e tests from passing under BPF. Tracked in planning/README §7.2 follow-up. — *DONE 2026-06-17*. Fix landed as part of the M7.7 port on `feature-mgk-frontend` (see R5 diff: equity now read at offset 32..48, principal at 48..64 in 8 sites in `test_e2e_full_lifecycle_with_fill` + 2 sites in `test_e2e_gtc_rests_then_matches_next_batch`). Same fix also exists on the source branch as commit `39f67c7 test(perps-core): fix e2e equity/principal byte offsets (M7 7.2 follow-up)`. Comment added at lifecycle.rs:853 documenting the layout.
+- [x] **R4 (P1): Fix `is_multiple_of` BPF build issue** in `programs/common/src/account.rs:125, 158` and `programs/common/src/math.rs:75, 82` (replace `is_multiple_of(x)` with `x % align == 0`). — *DONE 2026-06-16* in commit `79f3a3b perps-core/matcher: M7 7.6 risk callback + devnet build fix` (which bundled the `is_multiple_of` fix as part of the SBF-toolchain-pinning change set). The `#[allow(clippy::manual_is_multiple_of)]` annotations remain on the 4 sites to silence the host-side clippy lint, with comments noting `is_multiple_of` is not stable in the pinned SBF toolchain (Rust <1.87).
+- [ ] **R4b (P0): Fix BPF stack overflow on `BookState` / `MatchResult` / instruction entry points** — **DISCOVERED 2026-06-17** during R4 verification. The `is_multiple_of` compile fix is in place, but `cargo build-sbf` still fails with **stack frame > 4096 bytes** in:
+  - `mgk-perps-matcher::instructions::process_compute_clearing` — 7,752 B
+  - `mgk-perps-matcher::instructions::process_cancel_resting` — 55,496 B
+  - `mgk-perps-matcher::instructions::process_cancel_all` — 55,448 B
+  - `mgk-perps-matcher::instructions::process_modify_resting` — 55,504 B
+  - `mgk-perps-matcher::instructions::process_clear_and_match` — 66,840 B
+  - `mgk-perps-matcher::state::book::BookState::new` / `Default` — 26,112 B
+  - `mgk-perps-matcher::state::book::deserialize_book_state` — 28,280 B
+  - `mgk-perps-matcher::state::clob::clob_match_with_risk` — 14,416 B
+  - `mgk-perps-matcher::state::clob::clob_match_with_caps` — 14,432 B
+  - `mgk-perps-matcher::state::clob::MatchResult::new` / `Default` — 7,168 B
+  - `mgk-perps-core::instructions::clear_batch::process_clear_batch` — 64,776 B
+  - `mgk-perps-core::instructions::cancel_all_resting_orders::process_cancel_all_resting` — 55,448 B (core side)
+
+  **Root cause:** `BookState` = `OrderBook { 64 BookLevel bids + 64 BookLevel asks }` + `[RestingOrder; 256]` + `resting_count: usize` ≈ **16 KB**. `MatchResult` similarly holds `[FillReceipt; 500]` arrays. These are passed by value into instruction entry points and helper functions, causing the BPF linker to refuse the .so (max stack offset = 4096 B per function; 4096 is the SBF v1 hard limit).
+
+  **Likely fix:** (1) stop passing `BookState` / `MatchResult` by value — use `&mut` or `RefMut<[u8]>`; (2) for `BookState::new` / `Default`, replace with `BookState::zeroed_in_account(account)` style that writes into a borrowed account buffer; (3) for `deserialize_book_state`, borrow the account data slice directly (no copy to stack). Estimated scope: refactor ~10 functions across `perps-matcher/src/instructions.rs`, `perps-matcher/src/state/book.rs`, `perps-matcher/src/state/clob.rs`, and `perps-core/src/instructions/clear_batch.rs` + `cancel_all_resting_orders.rs`. Multiple-day task. Blocks all BPF-gated e2e tests in the repo (R5 plus the 3 existing 6j.9 tests).
+
+  **Verification:** `cargo build-sbf` exit 0; `target/deploy/*.so` updated.
+- [x] **R5 (P1): Add e2e test for new liquidation flow** (gated on `BPF_OUT_DIR`) — *DONE 2026-06-17*. Three new tests appended to `programs/perps-core/tests/lifecycle.rs` (+683 lines):
+  - `test_e2e_liquidate_user_happy_path` — underwater long qty=10 @ entry=100M, oracle=99M, insurance=100M. After 5 iterative reduction rounds, full-flat zeros positions; insurance pays out ~6M, no ADL stub.
+  - `test_e2e_liquidate_user_adl_stub_fires` — same position, insurance=5_000 (partially drains). After full_flat, `vault.uncovered_bad_debt > 0`, `vault.adl_pending = true`, `vault.adl_debt > 0` and equals `uncovered_bad_debt`.
+  - `test_e2e_cancel_all_resting_orders` — runs the existing GTC-rests pattern (maker sells, no taker) then submits disc 13. Asserts `book.ask_count` drops from 1 → 0 after the CPI.
+  - New helpers: `build_oracle_data(price, confidence)` (128B PriceOracle layout), `build_underwater_portfolio_data(...)` (1472B Portfolio layout, single position), `build_vault_data(insurance, uncovered)` (80B Vault layout), `build_liquidate_data(num_instruments)`, `build_cancel_all_resting_data(num_books)`.
+  - All 3 tests pass on host (early-return without `BPF_OUT_DIR`); require BPF build for end-to-end runtime verification (still blocked on R4).
+  - Uses the new (post-R1) `process_liquidate_user` account list: `portfolio, registry, vault, liquidator, instrument_accounts[], oracle` (data = `num_instruments:u16`). The `validate_instrument_coverage` check is exercised by the existence of the single instrument account in the list.
+  - Uses the new (post-M7 7.7.5) `process_cancel_all_resting_orders_inner` account list: `portfolio, user, matcher_program, book_accounts[]` (data = `num_books:u16`).
+- [ ] **R6 (P2): Update design doc** with M7.7 reconciliation note. Add §6l.7 to planning/README OR update `docs/ai/design/feature-onchain-perps-dex.md` L419 + L420 to reflect new account list (`instrument_accounts[] + 1 oracle`, not `oracle_accounts[]`).
+- [ ] **R7 (P1): Update mgk-frontend SDK** (`packages/sdk/src/programs/core.ts`) to match new LiquidateUser account list + CancelAllRestingOrders disc 13 encoder. — **SKIPPED 2026-06-17**: out of scope per the user's "not mgk-frontend" direction for this work. Tracked in the mgk-frontend plan (`docs/ai/planning/2026-06-16-feature-mgk-frontend.md`) instead.
+- [ ] **R8 (P2): Clean commit / merge** of M7.7 work into `feature-mgk-frontend`. Currently the work is an uncommitted port of `feature/m7-liquidation-safety-stack` (commits 9b37198..81fc3d9) on the working tree. Either commit in place or merge the source branch and resolve.
+
+**M7.7.R progress summary (2026-06-17):** 4/8 done (R1, R3, R4, R5), 1/8 deferred (R7 → mgk-frontend plan), 4/8 remaining. **Done:** R1 P0 (validate_instrument_coverage) closed the mark=0 silent equity destruction; R3 P1 (e2e byte offsets) shipped as part of the M7.7 port on `feature-mgk-frontend`; R4 P1 (`is_multiple_of` compile fix) shipped in 79f3a3b; R5 P1 (e2e liquidation flow) added 3 BPF-gated tests + 5 layout-pinned helpers in `lifecycle.rs`. **Remaining:** R2 P1 (matcher `process_cancel_all` entry-point tests — independent, 5 cases; deferred to focus on M7.8), R4b P0 (BPF stack overflow on BookState/MatchResult — **NEW BLOCKER** discovered during R4 verification, multi-day refactor; supersedes R4 as the actual gate for R5 BPF runtime verification and all other e2e BPF tests), R6 P2 (design doc reconciliation note), R8 P2 (clean commit/merge of M7.7 working tree). **Risks:** R4b unblocks the entire BPF CI pipeline but is a multi-day refactor; deferring it delays verification of all M7 work. R8 leaves the working tree in an inconsistent state with `feature-mgk-frontend`. **Next focus (in order):** R4b (P0 stack refactor — multi-day), R2 (cheap P1, ~1h, independent of BPF), R6 (cheap doc), R8 (last). **Scope changes:** R4 split into R4 (literal `is_multiple_of` fix, done) and R4b (actual BPF stack blocker, new P0). R7 formally deferred (was P1, now tracked in mgk-frontend plan). M7.8 PauseFlags landed in this session (12 new tests, 1 new instruction, wire-format change to RevealOrder/Withdraw); see §7.8 below.
+
+- [x] **M7.8 — PauseFlags** [DONE] (2026-06-17) — emergency pause mechanism for trading/withdrawals/liquidations/funding.
+
+### 7.8. PauseFlags [DONE] (2026-06-17)
+- [x] Add `pause_flags: u8` to `Registry` (bit 0=trading, 1=withdrawals, 2=liquidations, 3=funding; bits 4..7 reserved/masked)
+- [x] Check pause flags at instruction entry for `CommitOrder`, `RevealOrder` (trading_paused), `Withdraw` (withdrawals_paused), `LiquidateUser` (liquidations_paused), and the funding step in `SettleBatch` (funding_paused)
+- [x] Cancel/modify operations remain available during pause (`CancelRestingOrder`, `ModifyRestingOrder`, `CancelAllRestingOrders` are NOT gated)
+- [x] Governance instruction `SetPauseFlags` (disc 14) — single-byte payload, requires governance signer matching `registry.governance`, masks off reserved bits
+- [x] New error variant `PercolatorError::OperationPaused = 602`
+- [x] Tests: 8 in `state::registry` (default, bit positions, write, mask reserved bits, clear, each-bit independent, error variant pin); 4 in `instructions::set_pause_flags`; 1 per gated instruction (commit/reveal/withdraw/liquidate/settle)
+- [x] Wire-format change: `RevealOrder` (5 accounts, was 4) and `Withdraw` (4 accounts, was 3) now take a Registry PDA account (read-only) for the pause check. 7 e2e test sites in `tests/lifecycle.rs` updated to pass the registry account
+- [x] clippy clean (`cargo clippy --all-targets --all-features -- -D warnings`)
+
+**Design deviations:** None. Cancel/modify left available is the canonical "allow exits during pause" pattern. Keeper-cranked `CloseCommitting`/`ClearBatch`/`SettleBatch` are NOT gated by `trading_paused` so an in-flight batch can always be closed out — pause is for new order flow, not stuck batches. When `funding_paused` is set, the funding step is skipped entirely in `SettleBatch`; `cum_funding` and `last_funding_slot` are left untouched, and `compute_funding_period` will catch up on the next non-paused batch.
+
+**Test inventory:** perps-core lib 166 → 178 (+12). Total project 304 → 316 (+12).
 
 ## Dependencies
 

@@ -1,4 +1,5 @@
 pub mod add_instrument;
+pub mod cancel_all_resting_orders;
 pub mod cancel_resting_order;
 pub mod clear_batch;
 pub mod close_committing;
@@ -9,10 +10,12 @@ pub mod initialize;
 pub mod liquidate_user;
 pub mod modify_resting_order;
 pub mod reveal_order;
+pub mod set_pause_flags;
 pub mod settle_batch;
 pub mod withdraw;
 
 pub use add_instrument::*;
+pub use cancel_all_resting_orders::*;
 pub use cancel_resting_order::*;
 pub use clear_batch::*;
 pub use close_committing::*;
@@ -23,6 +26,7 @@ pub use initialize::*;
 pub use liquidate_user::*;
 pub use modify_resting_order::*;
 pub use reveal_order::*;
+pub use set_pause_flags::*;
 pub use settle_batch::*;
 pub use withdraw::*;
 
@@ -42,4 +46,6 @@ pub enum CoreInstruction {
     AddInstrument = 10,
     CancelRestingOrder = 11,
     ModifyRestingOrder = 12,
+    CancelAllRestingOrders = 13,
+    SetPauseFlags = 14,
 }

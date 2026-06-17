@@ -700,6 +700,7 @@ async fn test_e2e_full_lifecycle_with_fill() {
 
     // ------------------------------------------------------------------
     // 6. RevealOrder: both users reveal the parameters they committed to.
+    //    M7 7.8: registry PDA added at index 4 for `trading_paused` check.
     // ------------------------------------------------------------------
     let maker_reveal = Instruction {
         program_id: CORE_ID,
@@ -708,6 +709,7 @@ async fn test_e2e_full_lifecycle_with_fill() {
             AccountMeta::new(maker.pubkey(), true),
             AccountMeta::new(maker_pdas.portfolio, false),
             AccountMeta::new(maker_pdas.batch, false),
+            AccountMeta::new(pdas.registry, false),
         ],
         data: with_disc(
             5,
@@ -732,6 +734,7 @@ async fn test_e2e_full_lifecycle_with_fill() {
             AccountMeta::new(taker.pubkey(), true),
             AccountMeta::new(taker_pdas.portfolio, false),
             AccountMeta::new(taker_pdas.batch, false),
+            AccountMeta::new(pdas.registry, false),
         ],
         data: with_disc(
             5,
@@ -848,14 +851,17 @@ async fn test_e2e_full_lifecycle_with_fill() {
         .expect("batch");
 
     // Maker portfolio: principal=10M, equity=10M+1M+rebate, short 10 @ 100_000.
-    let maker_principal: [u8; 16] = maker_portfolio_acct.data[32..48].try_into().unwrap();
+    // Portfolio struct layout: user(32) | equity(16) | principal(16) | pnl(16) |
+    // im(16) | mm(16) | free_collateral(16) | health(16) | positions_len(2) | ...
+    // So: equity at offset 32, principal at offset 48. (M7 7.7 remediation R3)
+    let maker_principal: [u8; 16] = maker_portfolio_acct.data[48..64].try_into().unwrap();
     let maker_principal = i128::from_le_bytes(maker_principal);
     assert_eq!(
         maker_principal, USER_DEPOSIT_LAMPORTS as i128,
         "maker principal"
     );
 
-    let maker_equity: [u8; 16] = maker_portfolio_acct.data[16..32].try_into().unwrap();
+    let maker_equity: [u8; 16] = maker_portfolio_acct.data[32..48].try_into().unwrap();
     let maker_equity = i128::from_le_bytes(maker_equity);
     // 10M deposit + 1M notional from sell + 200 maker rebate = 11_000_200.
     assert_eq!(
@@ -878,14 +884,14 @@ async fn test_e2e_full_lifecycle_with_fill() {
     );
 
     // Taker portfolio: principal=10M, equity=10M-1M-500 fee, long 10 @ 100_000.
-    let taker_principal: [u8; 16] = taker_portfolio_acct.data[32..48].try_into().unwrap();
+    let taker_principal: [u8; 16] = taker_portfolio_acct.data[48..64].try_into().unwrap();
     let taker_principal = i128::from_le_bytes(taker_principal);
     assert_eq!(
         taker_principal, USER_DEPOSIT_LAMPORTS as i128,
         "taker principal"
     );
 
-    let taker_equity: [u8; 16] = taker_portfolio_acct.data[16..32].try_into().unwrap();
+    let taker_equity: [u8; 16] = taker_portfolio_acct.data[32..48].try_into().unwrap();
     let taker_equity = i128::from_le_bytes(taker_equity);
     // 10M deposit - 1M notional from buy - 500 taker fee = 8_999_500.
     assert_eq!(
@@ -1107,6 +1113,7 @@ async fn test_e2e_gtc_rests_then_matches_next_batch() {
             AccountMeta::new(maker.pubkey(), true),
             AccountMeta::new(maker_pdas_b1.portfolio, false),
             AccountMeta::new(maker_pdas_b1.batch, false),
+            AccountMeta::new(pdas.registry, false),
         ],
         data: with_disc(
             5,
@@ -1201,14 +1208,14 @@ async fn test_e2e_gtc_rests_then_matches_next_batch() {
         .unwrap()
         .expect("maker portfolio after batch 1");
     let maker_principal_b1: [u8; 16] =
-        maker_portfolio_after_b1.data[32..48].try_into().unwrap();
+        maker_portfolio_after_b1.data[48..64].try_into().unwrap();
     let maker_principal_b1 = i128::from_le_bytes(maker_principal_b1);
     assert_eq!(
         maker_principal_b1, USER_DEPOSIT_LAMPORTS as i128,
         "maker principal unchanged after batch 1 (no fills)"
     );
     let maker_equity_b1: [u8; 16] =
-        maker_portfolio_after_b1.data[16..32].try_into().unwrap();
+        maker_portfolio_after_b1.data[32..48].try_into().unwrap();
     let maker_equity_b1 = i128::from_le_bytes(maker_equity_b1);
     assert_eq!(
         maker_equity_b1, USER_DEPOSIT_LAMPORTS as i128,
@@ -1253,6 +1260,7 @@ async fn test_e2e_gtc_rests_then_matches_next_batch() {
             AccountMeta::new(taker.pubkey(), true),
             AccountMeta::new(taker_pdas_b2.portfolio, false),
             AccountMeta::new(taker_pdas_b2.batch, false),
+            AccountMeta::new(pdas.registry, false),
         ],
         data: with_disc(
             5,
@@ -1337,7 +1345,7 @@ async fn test_e2e_gtc_rests_then_matches_next_batch() {
 
     // Maker: equity = 10M (post b1) + 1M (sell) + 200 (rebate) = 11_000_200.
     let maker_equity_b2: [u8; 16] =
-        maker_portfolio_after_b2.data[16..32].try_into().unwrap();
+        maker_portfolio_after_b2.data[32..48].try_into().unwrap();
     let maker_equity_b2 = i128::from_le_bytes(maker_equity_b2);
     assert_eq!(
         maker_equity_b2,
@@ -1347,7 +1355,7 @@ async fn test_e2e_gtc_rests_then_matches_next_batch() {
 
     // Taker: equity = 10M (deposit) - 1M (buy) - 500 (fee) = 8_999_500.
     let taker_equity_b2: [u8; 16] =
-        taker_portfolio_after_b2.data[16..32].try_into().unwrap();
+        taker_portfolio_after_b2.data[32..48].try_into().unwrap();
     let taker_equity_b2 = i128::from_le_bytes(taker_equity_b2);
     assert_eq!(
         taker_equity_b2,
@@ -1584,6 +1592,7 @@ async fn test_e2e_settle_creates_next_batch_pda() {
             AccountMeta::new(user.pubkey(), true),
             AccountMeta::new(user_pdas_b1.portfolio, false),
             AccountMeta::new(user_pdas_b1.batch, false),
+            AccountMeta::new(pdas.registry, false),
         ],
         data: with_disc(
             5,
@@ -1777,6 +1786,7 @@ async fn test_e2e_settle_creates_next_batch_pda() {
             AccountMeta::new(user.pubkey(), true),
             AccountMeta::new(user_pdas_b2.portfolio, false),
             AccountMeta::new(user_pdas_b2.batch, false),
+            AccountMeta::new(pdas.registry, false),
         ],
         data: with_disc(
             5,
@@ -1883,5 +1893,678 @@ async fn test_e2e_settle_creates_next_batch_pda() {
     assert_ne!(
         batch_3_acct.data[108], 0,
         "batch_3.bump must be non-zero"
+    );
+}
+
+// =============================================================================
+//   M7 7.7 Liquidation E2E (R5)
+//
+//   New BPF-gated e2e tests for the M7 7.7 liquidation safety stack:
+//   1. test_e2e_liquidate_user_happy_path — underwater portfolio liquidated,
+//      insurance fund covers the loss, vault.adl_pending stays false.
+//   2. test_e2e_liquidate_user_adl_stub_fires — deeply underwater portfolio,
+//      insurance fund is partially drained, vault.adl_pending is set +
+//      vault.adl_debt is accumulated.
+//   3. test_e2e_cancel_all_resting_orders — book has a resting order from a
+//      prior batch; CancelAllRestingOrders removes it via CPI to the matcher.
+//
+//   Run with:
+//   ```bash
+//   cargo build-sbf                              # produces target/deploy/*.so
+//   BPF_OUT_DIR=target/deploy \
+//     cargo test -p mgk-perps-core --test lifecycle --features host-hash
+//   ```
+// =============================================================================
+
+/// Pre-built oracle account data (128 bytes), used to pre-seed the oracle
+/// account in genesis. The layout must match
+/// `programs/oracle/src/state.rs::PriceOracle` and the
+/// `ORACLE_PRICE_OFFSET = 80` / `ORACLE_MAGIC = 0x4C43_524F_4C43_5250`
+/// constants in `instructions/liquidate_user.rs::read_oracle_price`.
+fn build_oracle_data(price: i64, confidence: i64) -> Vec<u8> {
+    let mut data = vec![0u8; 128];
+    // magic (offset 0..8)
+    data[0..8].copy_from_slice(&0x4C43_524F_4C43_5250u64.to_le_bytes());
+    // version (offset 8) = 0
+    // bump (offset 9) = 0
+    // is_active (offset 10) = 1
+    data[10] = 1;
+    // _padding (11..16)
+    // authority (16..48) = zero
+    // instrument (48..80) = zero
+    // price (80..88)
+    data[80..88].copy_from_slice(&price.to_le_bytes());
+    // timestamp (88..96) = 0
+    // confidence (96..104)
+    data[96..104].copy_from_slice(&confidence.to_le_bytes());
+    // _reserved (104..128)
+    data
+}
+
+/// Pre-built Portfolio account data (1472 bytes) for a single-position
+/// underwater portfolio. Layout must match `state/portfolio.rs::Portfolio`.
+///
+/// The caller is responsible for ensuring `equity < mm` (i.e. `health < 0`)
+/// so the liquidation's health check passes.
+#[allow(clippy::too_many_arguments)]
+fn build_underwater_portfolio_data(
+    user: Pubkey,
+    bump: u8,
+    instrument_id: u16,
+    qty: i64,
+    entry_vwap: i64,
+    equity: i128,
+    im: u128,
+    mm: u128,
+) -> Vec<u8> {
+    let mut data = vec![0u8; 1472];
+    // user (0..32)
+    data[0..32].copy_from_slice(user.as_ref());
+    // equity (32..48)
+    data[32..48].copy_from_slice(&equity.to_le_bytes());
+    // principal (48..64) = 0
+    // pnl (64..80) = 0
+    // im (80..96)
+    data[80..96].copy_from_slice(&im.to_le_bytes());
+    // mm (96..112)
+    data[96..112].copy_from_slice(&mm.to_le_bytes());
+    // free_collateral (112..128) = equity - im
+    data[112..128].copy_from_slice(&equity.saturating_sub(im as i128).to_le_bytes());
+    // health (128..144) = equity - mm  (must be < 0 for liquidation to proceed)
+    data[128..144].copy_from_slice(&equity.saturating_sub(mm as i128).to_le_bytes());
+    // positions_len (144..146) = 1
+    data[144..146].copy_from_slice(&1u16.to_le_bytes());
+    // _pad (146..152)
+    // position[0] starts at offset 152
+    //   instrument_id (152..154)
+    data[152..154].copy_from_slice(&instrument_id.to_le_bytes());
+    //   _pad (154..160)
+    //   qty (160..168)
+    data[160..168].copy_from_slice(&qty.to_le_bytes());
+    //   entry_vwap (168..176)
+    data[168..176].copy_from_slice(&entry_vwap.to_le_bytes());
+    // rest of positions (176..920) = zero
+    // last_funding_checkpoint (920..1432) = zero
+    // last_batch_id (1432..1440) = zero
+    // last_slot (1440..1448) = zero
+    // bump (1448..1449)
+    data[1448] = bump;
+    // _padding (1449..1456)
+    // trailing alignment to 16 bytes (1456..1472)
+    data
+}
+
+/// Pre-built Vault account data (80 bytes). Only the insurance_fund and
+/// uncovered_bad_debt fields are set; everything else is zero. Layout
+/// must match `state/vault.rs::Vault` (post-M7 7.7 field order).
+fn build_vault_data(insurance_fund: u128, uncovered_bad_debt: u128) -> Vec<u8> {
+    let mut data = vec![0u8; 80];
+    // balance (0..8) = 0
+    // insurance_fund (8..24)
+    data[8..24].copy_from_slice(&insurance_fund.to_le_bytes());
+    // uncovered_bad_debt (24..40)
+    data[24..40].copy_from_slice(&uncovered_bad_debt.to_le_bytes());
+    // adl_debt (40..56) = 0
+    // adl_pending (56) = false
+    // bump (57) = 0
+    // _padding (58..64)
+    // trailing alignment (64..80)
+    data
+}
+
+/// LiquidateUser data: `num_instruments(2)` — number of instrument accounts
+/// that follow in the account list.
+fn build_liquidate_data(num_instruments: u16) -> Vec<u8> {
+    num_instruments.to_le_bytes().to_vec()
+}
+
+/// CancelAllRestingOrders data: `num_books(2)` — number of book accounts
+/// that follow in the account list.
+fn build_cancel_all_resting_data(num_books: u16) -> Vec<u8> {
+    num_books.to_le_bytes().to_vec()
+}
+
+// -----------------------------------------------------------------------------
+// Test 1: happy path — insurance covers the loss, no ADL stub.
+// -----------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_e2e_liquidate_user_happy_path() {
+    if std::env::var("BPF_OUT_DIR").is_err() && std::env::var("SBF_OUT_DIR").is_err() {
+        eprintln!(
+            "skipping test_e2e_liquidate_user_happy_path: \
+             set BPF_OUT_DIR=target/deploy to enable"
+        );
+        return;
+    }
+
+    // ---- 1. Set up ProgramTest + 1 user + 1 oracle + 1 instrument ----
+    // We use INSTRUMENT_ID = 0 (the default instrument seeded by
+    // program_test_with_pdas). The liquidation receives instrument
+    // accounts so it can look up composite mark_price / contract_size.
+    let user = Keypair::new();
+    let liquidator = Keypair::new();
+    let (mut pt, pdas) = program_test_with_pdas();
+
+    // Pre-fund user + liquidator wallets.
+    pt.add_account(
+        user.pubkey(),
+        Account::new(USER_FUNDING_LAMPORTS, 0, &system_program::id()),
+    );
+    pt.add_account(
+        liquidator.pubkey(),
+        Account::new(USER_FUNDING_LAMPORTS, 0, &system_program::id()),
+    );
+
+    // Derive the user's portfolio PDA. We don't use derive_user_pdas
+    // (which also derives a batch PDA) because we never run a batch in
+    // this test — liquidation reads the portfolio directly.
+    let (portfolio_pda, portfolio_bump) =
+        Pubkey::find_program_address(&[PORTFOLIO_SEED, user.pubkey().as_ref()], &CORE_ID);
+
+    // Oracle: price = 99_000_000 (1% below the position's entry), confidence = 0.
+    let oracle_price: i64 = 99_000_000;
+    let oracle_conf: i64 = 0;
+    let oracle_pubkey = Pubkey::new_unique();
+    pt.add_account(
+        oracle_pubkey,
+        Account {
+            lamports: 1_000_000,
+            data: build_oracle_data(oracle_price, oracle_conf),
+            owner: solana_sdk::pubkey!("PRclOracle11111111111111111111111111111111"),
+            executable: false,
+            rent_epoch: 0,
+        },
+    );
+
+    // Pre-seed the portfolio with a single long position that's deeply
+    // underwater. equity = -10M, mm = 0, so health = -10M (underwater).
+    // The position is qty=10 @ entry=100M; mark = 99M (from oracle, since
+    // instrument.mark_price == 0 on first batch).
+    let initial_equity: i128 = -10_000_000;
+    let portfolio_data = build_underwater_portfolio_data(
+        user.pubkey(),
+        portfolio_bump,
+        INSTRUMENT_ID,
+        10,                       // qty
+        100_000_000,              // entry_vwap
+        initial_equity,
+        0,                        // im (will be recomputed)
+        0,                        // mm (will be recomputed)
+    );
+    pt.add_account(
+        portfolio_pda,
+        Account {
+            lamports: 1_000_000,
+            data: portfolio_data,
+            owner: CORE_ID,
+            executable: false,
+            rent_epoch: 0,
+        },
+    );
+
+    // Pre-seed the vault with a healthy insurance fund (100M). After
+    // liquidation, the insurance should be partially drained (to cover
+    // the loss) but the ADL stub must NOT fire.
+    let initial_insurance: u128 = 100_000_000;
+    pt.add_account(
+        pdas.vault,
+        Account {
+            lamports: 1_000_000,
+            data: build_vault_data(initial_insurance, 0),
+            owner: CORE_ID,
+            executable: false,
+            rent_epoch: 0,
+        },
+    );
+
+    // Initialize (one time, persistent).
+    let governance = Keypair::new();
+    let (_, registry_bump) = Pubkey::find_program_address(&[REGISTRY_SEED], &CORE_ID);
+    let (_, instrument_bump) =
+        Pubkey::find_program_address(&[INSTRUMENT_SEED, &0u16.to_le_bytes()], &CORE_ID);
+    let init_ix = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(pdas.registry, false),
+            AccountMeta::new(governance.pubkey(), true),
+            AccountMeta::new(pdas.instrument, false),
+        ],
+        data: with_disc(
+            0,
+            build_initialize_data(governance.pubkey(), registry_bump, instrument_bump, oracle_pubkey)[1..]
+                .to_vec(),
+        ),
+    };
+    let mut ctx = pt.start_with_context().await;
+    submit(&mut ctx, init_ix, &[&governance]).await.unwrap();
+
+    // ---- 2. Call LiquidateUser ----
+    let liquidate_ix = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(portfolio_pda, false),
+            AccountMeta::new_readonly(pdas.registry, false),
+            AccountMeta::new(pdas.vault, false),
+            AccountMeta::new_readonly(liquidator.pubkey(), true),
+            AccountMeta::new_readonly(pdas.instrument, false),
+            AccountMeta::new_readonly(oracle_pubkey, false),
+        ],
+        data: with_disc(9, build_liquidate_data(1)),
+    };
+    submit(&mut ctx, liquidate_ix, &[&liquidator]).await.unwrap();
+
+    // ---- 3. Assert: insurance drained, no ADL stub ----
+    let vault_acct = ctx
+        .banks_client
+        .get_account(pdas.vault)
+        .await
+        .unwrap()
+        .expect("vault must exist");
+    let insurance_after = u128::from_le_bytes(vault_acct.data[8..24].try_into().unwrap());
+    let uncovered_after = u128::from_le_bytes(vault_acct.data[24..40].try_into().unwrap());
+    let adl_debt_after = u128::from_le_bytes(vault_acct.data[40..56].try_into().unwrap());
+    let adl_pending_after = vault_acct.data[56];
+
+    assert!(
+        insurance_after < initial_insurance,
+        "insurance must be drained: before={initial_insurance}, after={insurance_after}"
+    );
+    assert_eq!(
+        uncovered_after, 0,
+        "happy path must not accumulate uncovered_bad_debt"
+    );
+    assert_eq!(
+        adl_pending_after, 0,
+        "happy path must not set adl_pending"
+    );
+    assert_eq!(
+        adl_debt_after, 0,
+        "happy path must not accumulate adl_debt"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// Test 2: ADL stub fires when insurance is partially drained.
+// -----------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_e2e_liquidate_user_adl_stub_fires() {
+    if std::env::var("BPF_OUT_DIR").is_err() && std::env::var("SBF_OUT_DIR").is_err() {
+        eprintln!(
+            "skipping test_e2e_liquidate_user_adl_stub_fires: \
+             set BPF_OUT_DIR=target/deploy to enable"
+        );
+        return;
+    }
+
+    let user = Keypair::new();
+    let liquidator = Keypair::new();
+    let (mut pt, pdas) = program_test_with_pdas();
+
+    pt.add_account(
+        user.pubkey(),
+        Account::new(USER_FUNDING_LAMPORTS, 0, &system_program::id()),
+    );
+    pt.add_account(
+        liquidator.pubkey(),
+        Account::new(USER_FUNDING_LAMPORTS, 0, &system_program::id()),
+    );
+
+    let (portfolio_pda, portfolio_bump) =
+        Pubkey::find_program_address(&[PORTFOLIO_SEED, user.pubkey().as_ref()], &CORE_ID);
+
+    let oracle_price: i64 = 99_000_000;
+    let oracle_pubkey = Pubkey::new_unique();
+    pt.add_account(
+        oracle_pubkey,
+        Account {
+            lamports: 1_000_000,
+            data: build_oracle_data(oracle_price, 0),
+            owner: solana_sdk::pubkey!("PRclOracle11111111111111111111111111111111"),
+            executable: false,
+            rent_epoch: 0,
+        },
+    );
+
+    // Same underwater position as test 1, but insurance is much smaller
+    // (5_000) so the post-full_flat bad debt is only partially covered
+    // and the ADL stub fires for the residual.
+    let portfolio_data = build_underwater_portfolio_data(
+        user.pubkey(),
+        portfolio_bump,
+        INSTRUMENT_ID,
+        10,
+        100_000_000,
+        -10_000_000, // equity
+        0,
+        0,
+    );
+    pt.add_account(
+        portfolio_pda,
+        Account {
+            lamports: 1_000_000,
+            data: portfolio_data,
+            owner: CORE_ID,
+            executable: false,
+            rent_epoch: 0,
+        },
+    );
+
+    // Insurance = 5_000 (much less than the expected 6M bad debt).
+    let initial_insurance: u128 = 5_000;
+    pt.add_account(
+        pdas.vault,
+        Account {
+            lamports: 1_000_000,
+            data: build_vault_data(initial_insurance, 0),
+            owner: CORE_ID,
+            executable: false,
+            rent_epoch: 0,
+        },
+    );
+
+    let governance = Keypair::new();
+    let (_, registry_bump) = Pubkey::find_program_address(&[REGISTRY_SEED], &CORE_ID);
+    let (_, instrument_bump) =
+        Pubkey::find_program_address(&[INSTRUMENT_SEED, &0u16.to_le_bytes()], &CORE_ID);
+    let init_ix = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(pdas.registry, false),
+            AccountMeta::new(governance.pubkey(), true),
+            AccountMeta::new(pdas.instrument, false),
+        ],
+        data: with_disc(
+            0,
+            build_initialize_data(governance.pubkey(), registry_bump, instrument_bump, oracle_pubkey)[1..]
+                .to_vec(),
+        ),
+    };
+    let mut ctx = pt.start_with_context().await;
+    submit(&mut ctx, init_ix, &[&governance]).await.unwrap();
+
+    let liquidate_ix = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(portfolio_pda, false),
+            AccountMeta::new_readonly(pdas.registry, false),
+            AccountMeta::new(pdas.vault, false),
+            AccountMeta::new_readonly(liquidator.pubkey(), true),
+            AccountMeta::new_readonly(pdas.instrument, false),
+            AccountMeta::new_readonly(oracle_pubkey, false),
+        ],
+        data: with_disc(9, build_liquidate_data(1)),
+    };
+    submit(&mut ctx, liquidate_ix, &[&liquidator]).await.unwrap();
+
+    // ---- Assert: insurance drained to 0, ADL stub fired ----
+    let vault_acct = ctx
+        .banks_client
+        .get_account(pdas.vault)
+        .await
+        .unwrap()
+        .expect("vault must exist");
+    let insurance_after = u128::from_le_bytes(vault_acct.data[8..24].try_into().unwrap());
+    let uncovered_after = u128::from_le_bytes(vault_acct.data[24..40].try_into().unwrap());
+    let adl_debt_after = u128::from_le_bytes(vault_acct.data[40..56].try_into().unwrap());
+    let adl_pending_after = vault_acct.data[56];
+
+    assert_eq!(
+        insurance_after, 0,
+        "insurance must be fully drained (started at {initial_insurance})"
+    );
+    assert!(
+        uncovered_after > 0,
+        "uncovered_bad_debt must be > 0 when ADL stub fires (got {uncovered_after})"
+    );
+    assert!(
+        adl_debt_after > 0,
+        "adl_debt must accumulate when ADL stub fires (got {adl_debt_after})"
+    );
+    assert_eq!(
+        adl_pending_after, 1,
+        "adl_pending must be set to true"
+    );
+    // The ADL debt should equal the uncovered bad debt (the stub flags
+    // the same value the insurance claim failed to cover).
+    assert_eq!(
+        adl_debt_after, uncovered_after,
+        "adl_debt must match uncovered_bad_debt"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// Test 3: CancelAllRestingOrders removes a user's resting order via CPI.
+// -----------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_e2e_cancel_all_resting_orders() {
+    if std::env::var("BPF_OUT_DIR").is_err() && std::env::var("SBF_OUT_DIR").is_err() {
+        eprintln!(
+            "skipping test_e2e_cancel_all_resting_orders: \
+             set BPF_OUT_DIR=target/deploy to enable"
+        );
+        return;
+    }
+
+    // ---- 1. Set up ProgramTest + 1 user + 1 batch ----
+    let batch_id: u64 = 1;
+    let nonce: u64 = 0;
+
+    let user = Keypair::new();
+    let user_pdas = derive_user_pdas(&user.pubkey(), batch_id, nonce);
+    let (mut pt, pdas) = program_test_with_pdas();
+
+    pt.add_account(
+        user.pubkey(),
+        Account::new(USER_FUNDING_LAMPORTS, 0, &system_program::id()),
+    );
+    seed_user_accounts(&mut pt, &user_pdas);
+
+    let (results_pda, _) =
+        Pubkey::find_program_address(&[b"results", &batch_id.to_le_bytes()], &CORE_ID);
+    pt.add_account(
+        results_pda,
+        Account::new(1_000_000, RESULTS_ACCOUNT_SIZE, &CORE_ID),
+    );
+
+    // M7 7.1: pre-seed the next-batch PDA so SettleBatch has somewhere
+    // to write the new batch's state.
+    let (next_batch_pda, _) =
+        Pubkey::find_program_address(&[BATCH_SEED, &(batch_id + 1).to_le_bytes()], &CORE_ID);
+    pt.add_account(next_batch_pda, Account::new(1_000_000, BATCH_SIZE, &CORE_ID));
+
+    let mut ctx = pt.start_with_context().await;
+
+    // ---- 2. Initialize (one time, persistent) ----
+    let governance = Keypair::new();
+    let oracle = Pubkey::new_unique();
+    let (_, registry_bump) = Pubkey::find_program_address(&[REGISTRY_SEED], &CORE_ID);
+    let (_, instrument_bump) =
+        Pubkey::find_program_address(&[INSTRUMENT_SEED, &0u16.to_le_bytes()], &CORE_ID);
+    let init_ix = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(pdas.registry, false),
+            AccountMeta::new(governance.pubkey(), true),
+            AccountMeta::new(pdas.instrument, false),
+        ],
+        data: with_disc(
+            0,
+            build_initialize_data(governance.pubkey(), registry_bump, instrument_bump, oracle)[1..]
+                .to_vec(),
+        ),
+    };
+    submit(&mut ctx, init_ix, &[&governance]).await.unwrap();
+
+    let init_port = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(user_pdas.portfolio, false),
+            AccountMeta::new(user.pubkey(), true),
+        ],
+        data: with_disc(
+            1,
+            build_init_portfolio_data(&user.pubkey(), user_pdas.portfolio_bump),
+        ),
+    };
+    submit(&mut ctx, init_port, &[&user]).await.unwrap();
+
+    let dep = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(user_pdas.portfolio, false),
+            AccountMeta::new(user.pubkey(), true),
+            AccountMeta::new_readonly(system_program::id(), false),
+            AccountMeta::new(pdas.vault, false),
+        ],
+        data: with_disc(2, build_deposit_data(USER_DEPOSIT_LAMPORTS)),
+    };
+    submit(&mut ctx, dep, &[&user]).await.unwrap();
+
+    // ---- 3. Run a maker-only batch so the GTC sell rests on the book ----
+    const USER_SALT: u64 = 0xCAFE_CAFE_CAFE_CAFE;
+    let user_commit = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(user_pdas.commitment, false),
+            AccountMeta::new(user.pubkey(), true),
+            AccountMeta::new(user_pdas.portfolio, false),
+            AccountMeta::new(user_pdas.batch, false),
+            AccountMeta::new(pdas.registry, false),
+        ],
+        data: with_disc(
+            4,
+            build_commit_order_data(
+                ORDER_TYPE_LIMIT_GTC,
+                INSTRUMENT_ID,
+                false,
+                SIDE_SELL,
+                ORDER_PRICE,
+                ORDER_QTY,
+                USER_SALT,
+                batch_id,
+                user_pdas.commitment_bump,
+            ),
+        ),
+    };
+    submit(&mut ctx, user_commit, &[&user]).await.unwrap();
+
+    let user_reveal = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(user_pdas.commitment, false),
+            AccountMeta::new(user.pubkey(), true),
+            AccountMeta::new(user_pdas.portfolio, false),
+            AccountMeta::new(user_pdas.batch, false),
+            AccountMeta::new(pdas.registry, false),
+        ],
+        data: with_disc(
+            5,
+            build_reveal_order_data(
+                ORDER_TYPE_LIMIT_GTC,
+                INSTRUMENT_ID,
+                false,
+                SIDE_SELL,
+                ORDER_PRICE,
+                ORDER_QTY,
+                USER_SALT,
+                batch_id,
+            ),
+        ),
+    };
+    submit(&mut ctx, user_reveal, &[&user]).await.unwrap();
+
+    let close = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(user_pdas.batch, false),
+            AccountMeta::new(pdas.registry, false),
+        ],
+        data: with_disc(6, build_close_committing_data()),
+    };
+    submit(&mut ctx, close, &[]).await.unwrap();
+
+    let clear = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(user_pdas.batch, false),
+            AccountMeta::new(pdas.book, false),
+            AccountMeta::new(results_pda, false),
+            AccountMeta::new_readonly(MATCHER_ID, false),
+            AccountMeta::new(pdas.registry, false),
+            AccountMeta::new_readonly(pdas.instrument, false),
+            AccountMeta::new(user_pdas.commitment, false),
+            AccountMeta::new_readonly(user_pdas.portfolio, false),
+        ],
+        data: with_disc(7, build_clear_batch_data(1, 1, 1)),
+    };
+    submit(&mut ctx, clear, &[]).await.unwrap();
+
+    let settle = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(user_pdas.batch, false),
+            AccountMeta::new(pdas.registry, false),
+            AccountMeta::new(pdas.vault, false),
+            AccountMeta::new_readonly(results_pda, false),
+            AccountMeta::new(pdas.instrument, false),
+            AccountMeta::new_readonly(pdas.book, false),
+            AccountMeta::new_readonly(oracle, false),
+            AccountMeta::new_readonly(MATCHER_ID, false),
+            AccountMeta::new(user_pdas.commitment, false),
+            AccountMeta::new(user_pdas.portfolio, false),
+            AccountMeta::new(next_batch_pda, false),
+        ],
+        data: with_disc(8, build_settle_batch_data(1, 1)),
+    };
+    submit(&mut ctx, settle, &[]).await.unwrap();
+
+    // ---- 4. Sanity check: book has a resting order before cancel ----
+    // BookState layout (programs/perps-matcher/src/state/book.rs):
+    //   instrument_id (0..2), best_bid (2..10), best_ask (10..18),
+    //   bid_count (18..20), ask_count (20..22)
+    let book_before = ctx
+        .banks_client
+        .get_account(pdas.book)
+        .await
+        .unwrap()
+        .expect("book must exist");
+    let ask_count_before = u16::from_le_bytes(book_before.data[20..22].try_into().unwrap());
+    assert_eq!(
+        ask_count_before, 1,
+        "book should have 1 ask (the maker's GTC sell resting)"
+    );
+
+    // ---- 5. Call CancelAllRestingOrders (M7 7.7.5, disc 13) ----
+    let cancel_all = Instruction {
+        program_id: CORE_ID,
+        accounts: vec![
+            AccountMeta::new(user_pdas.portfolio, false),
+            AccountMeta::new(user.pubkey(), true),
+            AccountMeta::new_readonly(MATCHER_ID, false),
+            AccountMeta::new(pdas.book, false),
+        ],
+        data: with_disc(13, build_cancel_all_resting_data(1)),
+    };
+    submit(&mut ctx, cancel_all, &[&user]).await.unwrap();
+
+    // ---- 6. Assert: book is empty (ask_count == 0) ----
+    let book_after = ctx
+        .banks_client
+        .get_account(pdas.book)
+        .await
+        .unwrap()
+        .expect("book must exist");
+    let ask_count_after = u16::from_le_bytes(book_after.data[20..22].try_into().unwrap());
+    let bid_count_after = u16::from_le_bytes(book_after.data[18..20].try_into().unwrap());
+    assert_eq!(
+        ask_count_after, 0,
+        "CancelAllRestingOrders should remove the maker's resting ask"
+    );
+    assert_eq!(
+        bid_count_after, 0,
+        "book should have no bids (no maker on bid side in this test)"
     );
 }

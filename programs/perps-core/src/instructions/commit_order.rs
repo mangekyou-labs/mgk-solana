@@ -128,6 +128,15 @@ pub fn process_commit_order(
 
     // Read registry for dynamic deposit (base * volatility_multiplier)
     let registry = unsafe { &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry) };
+
+    // M7 7.8: governance emergency brake. Reject new commitments when
+    // `trading_paused` is set. Reveal / cancel / withdraw are unaffected
+    // — users can still exit positions and pull funds.
+    if registry.is_trading_paused() {
+        msg!("Error: Trading is paused");
+        return Err(PercolatorError::OperationPaused.into());
+    }
+
     let deposit = registry.deposit_amount();
 
     // Lock deposit against portfolio margin

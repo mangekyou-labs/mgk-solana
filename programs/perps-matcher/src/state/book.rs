@@ -351,6 +351,37 @@ pub fn cancel_resting_by_id(
     Err(BookError::NotFound)
 }
 
+/// Cancel every resting order owned by `user`. Returns the count removed.
+///
+/// Used by M7 7.7 liquidation flow: keeper invokes `CancelAllRestingOrders`
+/// on Core (disc 13), which CPIs to matcher `CancelAll` (disc 4) per book
+/// to clean the user out of the book before liquidation marks positions.
+///
+/// Iterates from the highest offset downward so `remove_at_offset`'s
+/// level/chain updates do not invalidate not-yet-visited lower offsets.
+/// `remove_at_offset` clears the slot in place (`resting_count` is not
+/// decremented — see P1 deviation #12).
+///
+/// Errors:
+/// - `BookError::NotFound` if a pre-filtered slot can no longer be removed
+///   (indicates state corruption; should not happen).
+pub fn cancel_all_for_user(
+    state: &mut BookState,
+    user: &Pubkey,
+) -> Result<usize, BookError> {
+    let mut removed = 0;
+    let mut i = state.resting_count;
+    while i > 0 {
+        i -= 1;
+        let r = &state.resting[i];
+        if r.qty > 0 && r.user == *user {
+            remove_at_offset(state, i as u32)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// Modify a single resting order's remaining `qty` by `order_id`, asserting
 /// the calling user owns it. `new_qty` is the new total order qty (not the
 /// delta). Returns the updated order on success.
@@ -939,5 +970,72 @@ mod tests {
             modify_resting_qty(&mut state, id, &user_pubkey(1), 5).unwrap();
         assert_eq!(updated.qty, 5);
         assert_eq!(state.book.bids[0].total_qty, 5);
+    }
+
+    // ---- M7 7.7: CancelAllForUser ----
+
+    #[test]
+    fn test_cancel_all_for_user_no_orders_returns_zero() {
+        let mut state = BookState::new();
+        let removed = cancel_all_for_user(&mut state, &user_pubkey(1)).unwrap();
+        assert_eq!(removed, 0);
+        assert_eq!(state.resting_count, 0);
+        assert_eq!(state.book.bid_count, 0);
+        assert_eq!(state.book.ask_count, 0);
+    }
+
+    #[test]
+    fn test_cancel_all_for_user_no_match_returns_zero() {
+        let mut state = BookState::new();
+        place_resting(&mut state, &make_order(1, Side::Buy, 100, 5)).unwrap();
+        place_resting(&mut state, &make_order(1, Side::Sell, 110, 7)).unwrap();
+        // No resting orders belong to user 2.
+        let removed = cancel_all_for_user(&mut state, &user_pubkey(2)).unwrap();
+        assert_eq!(removed, 0);
+        // Original orders intact.
+        assert_eq!(state.book.bid_count, 1);
+        assert_eq!(state.book.ask_count, 1);
+        assert_eq!(state.book.bids[0].total_qty, 5);
+        assert_eq!(state.book.asks[0].total_qty, 7);
+    }
+
+    #[test]
+    fn test_cancel_all_for_user_removes_all_user_orders() {
+        let mut state = BookState::new();
+        // User 1: 3 orders across 2 levels on both sides.
+        place_resting(&mut state, &make_order(1, Side::Buy, 100, 5)).unwrap();
+        place_resting(&mut state, &make_order(1, Side::Buy, 100, 7)).unwrap();
+        place_resting(&mut state, &make_order(1, Side::Sell, 110, 3)).unwrap();
+        // User 2: 2 orders that must remain.
+        place_resting(&mut state, &make_order(2, Side::Buy, 99, 4)).unwrap();
+        place_resting(&mut state, &make_order(2, Side::Sell, 111, 2)).unwrap();
+        assert_eq!(state.book.bid_count, 2);
+        assert_eq!(state.book.ask_count, 2);
+
+        let removed = cancel_all_for_user(&mut state, &user_pubkey(1)).unwrap();
+        assert_eq!(removed, 3);
+        // User 1's bid was placed first (price 100) → bids[0]; cleared.
+        // User 2's bid at price 99 placed second → bids[1]; untouched.
+        // Similarly asks[0] (price 110, user 1) cleared, asks[1] (price 111, user 2) kept.
+        assert_eq!(state.book.bid_count, 1);
+        assert_eq!(state.book.ask_count, 1);
+        assert_eq!(state.book.best_bid, 99);
+        assert_eq!(state.book.best_ask, 111);
+        assert_eq!(state.book.bids[1].total_qty, 4);
+        assert_eq!(state.book.asks[1].total_qty, 2);
+    }
+
+    #[test]
+    fn test_cancel_all_for_user_skips_tombstoned_slots() {
+        let mut state = BookState::new();
+        let id = place_resting(&mut state, &make_order(1, Side::Buy, 100, 5)).unwrap();
+        place_resting(&mut state, &make_order(1, Side::Buy, 100, 7)).unwrap();
+        // Cancel the first order to create a tombstone (qty cleared to 0).
+        cancel_resting_by_id(&mut state, id, &user_pubkey(1)).unwrap();
+
+        let removed = cancel_all_for_user(&mut state, &user_pubkey(1)).unwrap();
+        // Only the live second order should be removed; the tombstone is skipped.
+        assert_eq!(removed, 1);
+        assert_eq!(state.book.bid_count, 0);
     }
 }

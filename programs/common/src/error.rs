@@ -71,6 +71,8 @@ pub enum PercolatorError {
 
     // Perps-core errors (600-699) — M7 onwards
     RevealDeadlineExpired = 600,
+    InstrumentMissingForLiquidation = 601,
+    OperationPaused = 602,
 }
 
 impl From<PercolatorError> for u64 {
