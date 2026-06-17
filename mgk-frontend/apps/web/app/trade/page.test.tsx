@@ -1,19 +1,21 @@
 import { render, screen } from '@testing-library/react';
 import { vi } from 'vitest';
-import { PublicKey } from '@solana/web3.js';
+import { Connection, PublicKey } from '@solana/web3.js';
 
 import TradePage from './page';
 
+const MOCK_PUBKEY = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+
 vi.mock('@solana/wallet-adapter-react', () => ({
   useWallet: vi.fn(),
+  useConnection: vi.fn(() => ({
+    connection: new Connection('http://localhost:8899'),
+  })),
 }));
 
 vi.mock('@solana/wallet-adapter-react-ui', () => ({
   useWalletModal: vi.fn(() => ({ visible: false, setVisible: vi.fn() })),
 }));
-
-const MOCK_PUBKEY = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
-const EXPECTED_SHORT = `${MOCK_PUBKEY.toBase58().slice(0, 4)}…${MOCK_PUBKEY.toBase58().slice(-4)}`;
 
 function mockWallet(overrides: Record<string, unknown> = {}) {
   return {
@@ -44,21 +46,24 @@ describe('app/trade page', () => {
     expect(screen.getByTestId('page-frame')).toBeInTheDocument();
   });
 
-  it('prompts the user to connect a wallet when disconnected', async () => {
+  it('renders the market header', async () => {
     await mockUseWallet();
     render(<TradePage />);
-    expect(screen.getByTestId('trade-greeting')).toHaveTextContent(/connect a wallet/i);
+    expect(screen.getByTestId('market-header')).toBeInTheDocument();
   });
 
-  it('greets the connected wallet by its short pubkey', async () => {
-    await mockUseWallet({ connected: true, publicKey: MOCK_PUBKEY });
-    render(<TradePage />);
-    expect(screen.getByTestId('trade-greeting')).toHaveTextContent(`Hello ${EXPECTED_SHORT}`);
-  });
-
-  it('renders a placeholder subtitle that names the milestone state', async () => {
+  it('renders the 3-column trade body', async () => {
     await mockUseWallet();
     render(<TradePage />);
-    expect(screen.getByTestId('trade-subtitle')).toBeInTheDocument();
+    expect(screen.getByTestId('trade-body')).toBeInTheDocument();
+    expect(screen.getByTestId('chart-section')).toBeInTheDocument();
+    expect(screen.getByTestId('orderbook-section')).toBeInTheDocument();
+    expect(screen.getByTestId('orderform-section')).toBeInTheDocument();
+  });
+
+  it('renders the bottom tabs', async () => {
+    await mockUseWallet();
+    render(<TradePage />);
+    expect(screen.getByTestId('bottom-tabs')).toBeInTheDocument();
   });
 });

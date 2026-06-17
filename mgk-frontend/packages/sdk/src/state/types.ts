@@ -95,6 +95,71 @@ export const PORTFOLIO_SIZE = 1456;
 export const MAX_POSITIONS = 32;
 export const MAX_INSTRUMENTS = 32;
 
+// Order book constants (mirrors programs/common/src/book.rs and programs/perps-matcher/src/state/book.rs)
+export const MAX_LEVELS = 64;
+export const MAX_RESTING_ORDERS = 256;
+export const BOOK_HEADER_SIZE = 3120; // 48 (header) + 64*24 (bids) + 64*24 (asks)
+export const RESTING_ORDER_SIZE = 96;
+export const RESTING_ORDERS_OFFSET = BOOK_HEADER_SIZE;
+export const REGISTRY_SIZE = 96;
+
+// ---------------------------------------------------------------------------
+// Order book types
+// ---------------------------------------------------------------------------
+
+export interface BookLevel {
+  /** i64, LE, scaled 1e6 */
+  price: bigint;
+  /** u64, LE, scaled 1e6 */
+  totalQty: bigint;
+  /** u16, LE */
+  orderCount: number;
+  /** u32, LE, index into the resting-order flat array */
+  firstOrderOffset: number;
+}
+
+export interface BookHeader {
+  instrumentId: number;
+  bestBid: bigint;
+  bestAsk: bigint;
+  bidCount: number;
+  askCount: number;
+  nextOrderId: bigint;
+  lastUpdateSlot: bigint;
+  bids: BookLevel[];
+  asks: BookLevel[];
+}
+
+export interface RestingOrder {
+  orderId: bigint;
+  user: PublicKey;
+  side: Side;
+  price: bigint;
+  qty: bigint;
+  filledQty: bigint;
+  instrumentId: number;
+  reduceOnly: boolean;
+  batchPlaced: bigint;
+  nextOrderOffset: number;
+}
+
+// ---------------------------------------------------------------------------
+// Registry
+// ---------------------------------------------------------------------------
+
+export interface RegistryState {
+  governance: PublicKey;
+  instrumentCount: number;
+  volatilityMultiplier: number;
+  batchIdCounter: bigint;
+  baseDeposit: bigint;
+  nMin: number;
+  tMinSlots: bigint;
+  tMaxSlots: bigint;
+  tRevealSlots: bigint;
+  bump: number;
+}
+
 export function readI128(view: DataView, offset: number): bigint {
   const lo = view.getBigUint64(offset, true);
   const hi = view.getBigInt64(offset + 8, true);

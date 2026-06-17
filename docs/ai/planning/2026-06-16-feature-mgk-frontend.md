@@ -12,12 +12,12 @@ description: Subsystem of mgk protocol. 6-milestone build of Next.js 15 SPA + st
 
 ## Milestones
 
-- [x] **M1 — Foundation**: pnpm monorepo at `mgk-frontend/`, `mgk-frontend/apps/web` (Next.js 15), `mgk-frontend/apps/indexer` (Fastify + SQLite), `mgk-frontend/packages/sdk` skeleton, wallet adapter wired, "Hello wallet" trade page on devnet.
-- [x] **M2 — Read state** ✅: portfolio PDA fetch + display, batch timeline with phase indicator, order book from matcher Book PDA, recent-trades panel (UI only). Encoders for all 13 core instructions + Cancel/Modify. _All components built, trade page 3-column layout now wired (chart / order book / order form). Exit criteria met._
-- [x] **M3 — Order placement (commit-reveal)** ⚠️ (all hooks + components built; Cross/Limit locked tabs + RiskPanel missing from OrderForm; E2E happy path not done): order panel, salt + hash generation client-side, CommitOrder tx → localStorage persistence → auto RevealOrder tx. Friendly error mapping.
-- [x] **M4 — Indexer** ⚠️ (core infrastructure done; book REST endpoint is stub; WS snapshot empty; uses polling not logsSubscribe): Node 22 + Fastify + better-sqlite3, program-logs subscriber, FillReceipt decoder, candle bucketing (1m/5m/1h), REST API, WebSocket fan-out.
-- [ ] **M5 — Chart**: TradingView Advanced Chart widget (BINANCE data, Sharingan palette), mgk trade markers from indexer WS, timeframe switcher. _Widget built; Pyth candles + mgk trade markers not wired._
-- [ ] **M6 — Polish & E2E** ⚠️ (Playwright smoke test exists but references non-existent test IDs; landing page missing; error mapping done; devtools button done): Playwright happy-path test on devnet, Lighthouse pass, landing page, error-toast polish, dev-only Crank/Liquidate buttons, docs.
+- [x] **M1 — Foundation** ✅: pnpm monorepo, Next.js 15, indexer scaffold, SDK (instruction/PDA/state/error/commitment), wallet adapter, visual system, common components. All 13 tasks done.
+- [x] **M2 — Read state** ✅: portfolio/batch/book/market/Pyth stores, all trade/portfolio/common components, 3-column trade layout. All 13 tasks done.
+- [x] **M3 — Order placement (commit-reveal)** ⚠️: Hooks + stores built, onSubmit wired (G2), AccountActions wired (G4), ModifyRestingOrder wired (G5), Cancel fixed (4 accounts). T3.8 (E2E test) missing.
+- [x] **M4 — Indexer** ⚠️→✅: main.ts now wires all REST routes, WS server, subscriber (onFill + onBatchEvent), backfill on boot, graceful shutdown (G1 done 2026-06-17). T4.9 (integration test) needs verification.
+- [ ] **M5 — Chart** ⚠️: TradingView widget works (BINANCE:SOLUSDT, Sharingan palette). ~~G3 fixed 2026-06-17~~ — mgk trade markers now render as colored triangle overlay on chart. T5.2 (Pyth data) not done. T5.7 (offline badge) not done.
+- [ ] **M6 — Polish & E2E** ⚠️: Landing page, skeletons, error mapping, devtools done. T6.1 (E2E) blocked by G2. T6.2/6.6/6.8/6.9/6.10 not started. T6.10 (visual polish) not started.
 
 **Total estimate: 8–12 working days** (single engineer, devnet pace, no audit).
 
@@ -93,7 +93,7 @@ description: Subsystem of mgk protocol. 6-milestone build of Next.js 15 SPA + st
 - [x] **T5.1** (M) Install `lightweight-charts` v5, wrap in `<PriceChart instrumentId={...}/>`. Use `next/dynamic({ ssr: false })` to avoid SSR hydration issues. _Replaced: `TradingViewWidget.tsx` loads `tv.js` from CDN, renders `BINANCE:SOLUSDT`, themed to Sharingan palette. Script deduplication, dark theme, remount-on-symbol-change handled._
 - [ ] **T5.2** (M) Wire Pyth Hermes as chart data source: fetch `https://hermes.pyth.network/v2/price-feeds` for SOL/USD, use as the TradingView symbol override (post-MVP — currently uses BINANCE:SOLUSDT). _`lib/feeds/pyth.ts` exists for Hermes HTTP fetch. Not wired to chart. `hermesUrl` missing from `config.ts`._
 - [x] **T5.3** (M) Subscribe to indexer WS for live price line updates and trade markers. _Done. `lib/chart/useIndexerWs.ts` produces `SeriesMarker[]` from indexer WS fills. Not yet wired to the TradingView chart._
-- [ ] **T5.4** (M) Render mgk trade markers as up/down triangles on the TradingView chart using the chart API.
+- [x] **T5.4** (M) Render mgk trade markers as up/down triangles on the TradingView chart using the chart API. _Done via `MgkTradeMarkers` DOM overlay (G3 fix, 2026-06-17)._
 - [x] **T5.5** (M) Timeframe switcher: 1m / 5m / 15m / 1h / 4h. Re-fetch candles on switch, re-bucket mgk trades locally. _Done. `ChartToolbar.tsx` with 1m/5m/15m/1H/4H/1D tabs. Maps to TradingView intervals._
 - [x] **T5.6** (S) Crosshair tooltip, OHLCV legend, volume histogram at the bottom of the chart. _Done. TradingView widget includes these out of the box._
 - [ ] **T5.7** (S) Fallback: if indexer is unreachable, show last cached mgk trades + an orange "indexer offline" badge.
@@ -202,3 +202,50 @@ Buffer: +20% (1.5 days) for unknown unknowns (RPC rate limits, Hermes downtime, 
 - Memory note `Percolator reference codebase patterns` for the two-layer pattern (we mirror it in TS)
 - Memory note `Percolator 6j.9: solana-program-test e2e wiring for pinocchio programs` for the BPF layout caveat
 - Memory note `Percolator: shuffle seed must equal close_slot, not commit_deadline` (relevant for batch timeline correctness, not for frontend code directly, but the frontend surfaces the close slot)
+
+## Reconciliation (2026-06-17)
+
+Gaps discovered during design-vs-implementation comparison. Not in original plan.
+
+| ID | Gap | Priority | Blocks |
+|----|-----|----------|--------|
+| G1 | Indexer main.ts not wired | ~~P0~~ ✅ Fixed 2026-06-17 | — |
+| G2 | OrderForm.onSubmit not wired to useCommitOrder/useRevealOrder | ~~P0~~ ✅ Fixed 2026-06-17 | — |
+| G3 | useIndexerWs produces lightweight-charts markers; chart uses TradingView | ~~P0~~ ✅ Fixed 2026-06-17 | — |
+| G4 | AccountActions (InitPortfolio, Deposit, Withdraw) are disabled placeholders | ~~P1~~ ✅ Fixed 2026-06-17 | — |
+| G5 | Modify Resting Order button not wired (`_onModify` stub) | ~~P1~~ ✅ Fixed 2026-06-17 | — |
+| G6 | History tabs (5 of 8 BottomTabs show placeholder text) | P1 | Trader history UX |
+| G7 | CSP headers not set (design requires `default-src 'self'`) | P2 | Security hardening |
+| G8 | localStorage cleanup on wallet switch not implemented | P2 | Multi-wallet UX |
+| G9 | Book REST reads from Solana RPC (not SQLite) | P2 | Latency |
+| G10 | SDK `math.ts` missing; price/qty scaling is inline | P2 | Consistency |
+| G11 | IndexerProvider.tsx missing; WS lives in useIndexerWs hook | P2 | Architecture |
+| G12 | Commit-reveal edge cases not handled (expired batch, reveal mismatch, insufficient margin) | P1 | Error UX |
+
+**Test suite:** 341/341 web tests passing (SDK 134 unchanged). indexer tests unchanged at 21.
+
+**Next 3 tasks:** G6 (history tabs), G12 (commit-reveal edge cases), G7 (CSP headers).
+
+> **G5 fix (2026-06-17):** Wired Modify Resting Order button + fixed Cancel account list. Changes:
+> - **Cancel fix:** `handleCancel` now passes the full 4 accounts per entrypoint (Portfolio PDA, user, Book PDA, Matcher program) instead of just `publicKey`. Extracted shared `buildCancelOrModifyIx()` helper.
+> - **Modify wiring:** New `handleModify` calls `encodeModifyRestingOrder(orderId, newQty)` with same 4-account list.
+> - **`OrderRow` UX:** Inline qty editor — click "Modify" switches the qty cell to an input field pre-filled with remaining qty. "Confirm" sends the tx, "Cancel" exits edit mode. Both Cancel and Modify show `busy` (disabled) state during tx.
+> - `_onModify` stub removed, replaced with working `onModify` callback.
+> 
+> 341/341 tests green, typecheck clean, build clean. Playwright: no new errors.
+
+> **G3 fix (2026-06-17):** Mgk trade markers now visible as colored triangle overlay on the TradingView chart. Changes:
+> - **`useIndexerWs`** now returns `simpleMarkers: { price, side, slot, qty }[]` alongside the existing `markers` — decoupled from lightweight-charts types.
+> - **`MgkTradeMarkers` component** (new): Absolutely-positioned overlay on the right edge of the chart. Renders ▲ (green, buy) / ▼ (red, sell) at price-relative y positions. Self-computes visible price range from the marker set with configurable padding. Hidden when no markers exist.
+> - **`PriceChart`** now destructures `simpleMarkers` from `useIndexerWs` and renders `<MgkTradeMarkers>` inside the chart container alongside `<TradingViewWidget>`.
+> 
+> 341/341 web tests green, typecheck clean, build clean. Playwright: no new console errors, overlay component mounted but empty (no indexer fills). Will render markers live when indexer produces fills.
+
+> **G4 fix (2026-06-17):** Wired AccountActions footer with real tx operations. Changes:
+> - **SDK fix:** `encodeInitPortfolio` now outputs 34 bytes (disc + user pubkey(32) + bump(1)) — was 1 byte. Entrypoint `process_init_portfolio_inner` reads data[0..32] as user and data[32] as bump. New test for 34-byte format + round-trip.
+> - **`useAccountActions` hook** (new): `initPortfolio()`, `deposit(amount)`, `withdraw(amount)` — each builds full tx (PDA derivation, account metas, encode, send, confirm). Account lists mirror entrypoint: InitPortfolio=[portfolio(w),user(s)]; Deposit=[portfolio(w),user(s+w),system,vault(w)]; Withdraw=[portfolio(w),user(s+w),vault(w),registry].
+> - **`AccountActions` component** (new, `components/orderform/AccountActions.tsx`): extracted from OrderForm.tsx. Shows `Init Portfolio` (accent-toned) when no PDA exists; shows `Deposit` + `Withdraw` buttons with SOL amount input when portfolio exists. Returns `null` when wallet disconnected. Props: `portfolio`, `portfolioLoading`, `onTxSuccess`, `onTxError`.
+> - **OrderForm** updated: imports `AccountActions` component, passes through `portfolio`/`portfolioLoading`/`onTxSuccess`/`onTxError` props.
+> - **TradePage** updated: passes `portfolio`, callbacks to OrderForm.
+> 
+> SDK reran: 134/134 (+1 test). Web: 341/341 (+1 test, AccountActions init-portfolio assertion). Typecheck, build clean. Playwright: verified AccountActions absent when disconnected.

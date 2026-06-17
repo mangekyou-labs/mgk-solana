@@ -4,6 +4,8 @@ import './globals.css';
 import { Header } from '@/components/layout/Header';
 import { SolanaProvider } from '@/components/providers/SolanaProvider';
 import { ThemeProvider } from '@/components/providers/ThemeProvider';
+import { TickerBar } from '@/components/trade/TickerBar';
+import { StatusBar } from '@/components/trade/StatusBar';
 
 const inter = Inter({
   variable: '--font-inter',
@@ -36,7 +38,11 @@ export default function RootLayout({
         <ThemeProvider>
           <SolanaProvider>
             <Header />
-            {children}
+            <TickerBar />
+            <div className="flex-1 flex flex-col min-h-0">
+              {children}
+            </div>
+            <StatusBar />
           </SolanaProvider>
         </ThemeProvider>
       </body>

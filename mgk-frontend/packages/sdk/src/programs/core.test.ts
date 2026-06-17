@@ -29,10 +29,28 @@ describe('CORE_INSTRUCTION discriminator table', () => {
 });
 
 describe('encodeInitPortfolio', () => {
-  it('emits a single discriminator byte', () => {
-    const buf = encodeInitPortfolio();
-    expect(buf.length).toBe(1);
+  it('emits discriminator + user pubkey + bump, 34 bytes total', () => {
+    const user = new Uint8Array(32);
+    user[0] = 0xde;
+    user[31] = 0xad;
+    const bump = 255;
+    const buf = encodeInitPortfolio(user, bump);
+    expect(buf.length).toBe(34);
     expect(buf[0]).toBe(CORE_INSTRUCTION.InitPortfolio);
+    expect(buf[1]).toBe(0xde);
+    expect(buf[32]).toBe(0xad);
+    expect(buf[33]).toBe(255);
+  });
+
+  it('round-trips through InstructionReader', () => {
+    const user = new Uint8Array(32).fill(0xcc);
+    const bump = 7;
+    const buf = encodeInitPortfolio(user, bump);
+    const r = new InstructionReader(buf);
+    expect(r.readU8()).toBe(CORE_INSTRUCTION.InitPortfolio);
+    expect(r.readBytes(32)).toEqual(user);
+    expect(r.readU8()).toBe(bump);
+    expect(r.remaining).toBe(0);
   });
 });
 

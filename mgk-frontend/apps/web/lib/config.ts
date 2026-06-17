@@ -19,6 +19,11 @@ const DEVNET_DEFAULTS = {
   matcherProgramId: 'AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF',
   oracleProgramId: '6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA',
   indexerUrl: 'http://localhost:4000',
+  hermesUrl: 'https://hermes.pyth.network',
+  // Pyth feed IDs (Hermes content-addressed, same across all networks)
+  pythBtcFeedId: 'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+  pythEthFeedId: 'ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+  pythSolFeedId: 'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
 } as const;
 
 function readEnv(name: string, fallback: string): string {
@@ -50,6 +55,7 @@ const oracleProgramId = parsePkOrThrow(
   'NEXT_PUBLIC_ORACLE_PROGRAM_ID',
 );
 const indexerUrl = readEnv('NEXT_PUBLIC_INDEXER_URL', DEVNET_DEFAULTS.indexerUrl);
+const hermesUrl = readEnv('NEXT_PUBLIC_HERMES_URL', DEVNET_DEFAULTS.hermesUrl);
 
 export const config = {
   rpcUrl,
@@ -57,6 +63,10 @@ export const config = {
   matcherProgramId,
   oracleProgramId,
   indexerUrl,
+  hermesUrl,
+  pythBtcFeedId: DEVNET_DEFAULTS.pythBtcFeedId,
+  pythEthFeedId: DEVNET_DEFAULTS.pythEthFeedId,
+  pythSolFeedId: DEVNET_DEFAULTS.pythSolFeedId,
 } as const;
 
 export type AppConfig = typeof config;

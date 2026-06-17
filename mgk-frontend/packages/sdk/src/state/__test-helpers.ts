@@ -9,9 +9,12 @@ import {
   COMMITMENT_SIZE,
   MAX_INSTRUMENTS,
   PORTFOLIO_SIZE,
+  BOOK_HEADER_SIZE,
+  MAX_LEVELS,
   type BatchState,
   type CommitmentState,
   type PortfolioState,
+  type BookHeader,
 } from './types.js';
 
 function writeU128(view: DataView, offset: number, value: bigint): void {
@@ -104,4 +107,38 @@ export function encodePortfolio(state: PortfolioState): Uint8Array {
 
 export function pubkeyFromHex(hex: string): PublicKey {
   return new PublicKey(hex);
+}
+
+/** Encode a BookHeader for round-trip tests. */
+export function encodeBookHeader(state: BookHeader): Uint8Array {
+  const buf = new Uint8Array(BOOK_HEADER_SIZE);
+  const view = new DataView(buf.buffer);
+  view.setUint16(0, state.instrumentId, true);
+  view.setBigInt64(8, state.bestBid, true);
+  view.setBigInt64(16, state.bestAsk, true);
+  view.setUint32(24, state.bidCount, true);
+  view.setUint32(28, state.askCount, true);
+  view.setBigUint64(32, state.nextOrderId, true);
+  view.setBigUint64(40, state.lastUpdateSlot, true);
+  for (let i = 0; i < MAX_LEVELS; i++) {
+    const bidOff = 48 + i * 24;
+    const l = state.bids[i];
+    if (l) {
+      view.setBigInt64(bidOff, l.price, true);
+      view.setBigUint64(bidOff + 8, l.totalQty, true);
+      view.setUint16(bidOff + 16, l.orderCount, true);
+      view.setUint32(bidOff + 20, l.firstOrderOffset, true);
+    }
+  }
+  for (let i = 0; i < MAX_LEVELS; i++) {
+    const askOff = 48 + MAX_LEVELS * 24 + i * 24;
+    const l = state.asks[i];
+    if (l) {
+      view.setBigInt64(askOff, l.price, true);
+      view.setBigUint64(askOff + 8, l.totalQty, true);
+      view.setUint16(askOff + 16, l.orderCount, true);
+      view.setUint32(askOff + 20, l.firstOrderOffset, true);
+    }
+  }
+  return buf;
 }
