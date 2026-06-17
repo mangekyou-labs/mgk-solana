@@ -351,6 +351,40 @@ pub fn cancel_resting_by_id(
     Err(BookError::NotFound)
 }
 
+/// Cancel every live resting order owned by `user`. Returns the number of
+/// orders removed. Called by the matcher's `CancelAll` (disc 4) entrypoint,
+/// dispatched by Core's `CancelAllRestingOrders` (disc 13) on liquidation
+/// or user request.
+///
+/// Implementation notes:
+/// - Iterates by ascending offset; since `remove_at_offset` clears the slot
+///   in place (no swap-with-last) the remaining offsets stay valid.
+/// - `resting_count` is not decremented — it is a high-water mark. Slots
+///   stay allocated and may be reused by future `place_resting` calls.
+/// - Best bid / best ask are recomputed by `remove_at_offset` for each
+///   removal, so they stay accurate after the loop.
+pub fn cancel_all_for_user(state: &mut BookState, user: &Pubkey) -> usize {
+    let mut removed = 0usize;
+    let mut i = 0u32;
+    while (i as usize) < state.resting_count {
+        let qty = state.resting[i as usize].qty;
+        let is_alive = qty > 0;
+        let matches = is_alive && state.resting[i as usize].user == *user;
+        if matches {
+            // Defensive: if remove_at_offset fails for an unexpected reason,
+            // skip rather than abort the whole cancel-all.
+            if remove_at_offset(state, i).is_ok() {
+                removed += 1;
+                // do not increment i — the slot was cleared, but offsets
+                // are stable; next i is still valid.
+                continue;
+            }
+        }
+        i += 1;
+    }
+    removed
+}
+
 /// Modify a single resting order's remaining `qty` by `order_id`, asserting
 /// the calling user owns it. `new_qty` is the new total order qty (not the
 /// delta). Returns the updated order on success.

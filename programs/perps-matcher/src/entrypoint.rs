@@ -12,6 +12,7 @@ enum MatcherInstruction {
     CancelResting,
     ModifyResting,
     ClearAndMatch,
+    CancelAll,
 }
 
 pub fn process_instruction(
@@ -30,6 +31,7 @@ pub fn process_instruction(
         1 => MatcherInstruction::CancelResting,
         2 => MatcherInstruction::ModifyResting,
         3 => MatcherInstruction::ClearAndMatch,
+        4 => MatcherInstruction::CancelAll,
         _ => {
             msg!("Error: Unknown instruction");
             return Err(ProgramError::InvalidInstructionData);
@@ -52,6 +54,10 @@ pub fn process_instruction(
         MatcherInstruction::ClearAndMatch => {
             msg!("Instruction: ClearAndMatch");
             instructions::process_clear_and_match(program_id, accounts, &instruction_data[1..])
+        }
+        MatcherInstruction::CancelAll => {
+            msg!("Instruction: CancelAll");
+            instructions::process_cancel_all(program_id, accounts, &instruction_data[1..])
         }
     }
 }

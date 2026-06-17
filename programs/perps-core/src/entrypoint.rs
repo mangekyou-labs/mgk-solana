@@ -8,9 +8,10 @@ use pinocchio::{
 };
 
 use crate::instructions::{
-    CoreInstruction, process_add_instrument, process_cancel_resting_order, process_clear_batch,
-    process_close_committing, process_commit_order, process_deposit, process_init_portfolio,
-    process_initialize, process_liquidate_user, process_modify_resting_order, process_reveal_order,
+    CoreInstruction, process_add_instrument, process_cancel_all_resting_orders,
+    process_cancel_resting_order, process_clear_batch, process_close_committing,
+    process_commit_order, process_deposit, process_init_portfolio, process_initialize,
+    process_liquidate_user, process_modify_resting_order, process_reveal_order,
     process_set_pause_flags, process_settle_batch, process_withdraw,
 };
 use crate::state::{Portfolio, Registry, Vault};
@@ -45,6 +46,7 @@ pub fn process_instruction(
         10 => CoreInstruction::AddInstrument,
         11 => CoreInstruction::CancelRestingOrder,
         12 => CoreInstruction::ModifyRestingOrder,
+        13 => CoreInstruction::CancelAllRestingOrders,
         14 => CoreInstruction::SetPauseFlags,
         _ => {
             msg!("Error: Unknown instruction");
@@ -104,6 +106,10 @@ pub fn process_instruction(
         CoreInstruction::ModifyRestingOrder => {
             msg!("Instruction: ModifyRestingOrder");
             process_modify_resting_order_inner(program_id, accounts, &instruction_data[1..])
+        }
+        CoreInstruction::CancelAllRestingOrders => {
+            msg!("Instruction: CancelAllRestingOrders");
+            process_cancel_all_resting_orders_inner(program_id, accounts, &instruction_data[1..])
         }
         CoreInstruction::SetPauseFlags => {
             msg!("Instruction: SetPauseFlags");
@@ -610,16 +616,20 @@ fn process_settle_batch_inner(program_id: &Pubkey, accounts: &[AccountInfo], dat
     )
 }
 
-/// Liquidate an underwater portfolio
+/// Liquidate an underwater portfolio (M7 7.7).
 ///
-/// Accounts:
-/// 0. [writable] Portfolio PDA
-/// 1. [] Registry
-/// 2. [writable] Vault PDA
-/// 3. [signer] Liquidator
-///    4..4+N. [] Oracle accounts (N = num_oracles)
+/// Accounts (fixed + variable):
+/// - index 0: writable Portfolio PDA
+/// - index 1: read-only Registry (M7 7.8: required for
+///   `liquidations_paused` check)
+/// - index 2: writable Vault PDA
+/// - index 3: signer Liquidator
+/// - indices 4..4+num_instruments: read-only Instrument accounts (provide
+///   composite mark_price, contract_size, imr_bps, mmr_bps)
+/// - index 4+num_instruments: read-only fallback oracle account (single,
+///   owner = percolator-oracle)
 ///
-/// Data: num_oracles(2)
+/// Data: num_instruments(2)
 fn process_liquidate_user_inner(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     if accounts.len() < 5 {
         return Err(ProgramError::NotEnoughAccountKeys);
@@ -633,8 +643,15 @@ fn process_liquidate_user_inner(program_id: &Pubkey, accounts: &[AccountInfo], d
     let vault_account = &accounts[2];
     let liquidator_account = &accounts[3];
 
-    let num_oracles = u16::from_le_bytes(data[0..2].try_into().unwrap()) as usize;
-    let oracle_accounts = &accounts[4..4 + num_oracles];
+    let num_instruments = u16::from_le_bytes(data[0..2].try_into().unwrap()) as usize;
+    let inst_end = 4usize
+        .checked_add(num_instruments)
+        .ok_or(ProgramError::InvalidInstructionData)?;
+    if accounts.len() < inst_end + 1 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    let instrument_accounts = &accounts[4..inst_end];
+    let oracle_account = &accounts[inst_end];
 
     validate_owner(portfolio_account, program_id)?;
     validate_writable(portfolio_account)?;
@@ -643,11 +660,13 @@ fn process_liquidate_user_inner(program_id: &Pubkey, accounts: &[AccountInfo], d
     validate_writable(vault_account)?;
 
     process_liquidate_user(
+        program_id,
         portfolio_account,
         registry_account,
         vault_account,
         liquidator_account,
-        oracle_accounts,
+        instrument_accounts,
+        oracle_account,
     )
 }
 
@@ -762,4 +781,54 @@ fn process_set_pause_flags_inner(program_id: &Pubkey, accounts: &[AccountInfo], 
     let registry = unsafe { borrow_account_data_mut::<Registry>(registry_account)? };
 
     process_set_pause_flags(registry, governance_account, flags)
+}
+
+/// M7 7.7: cancel every resting order owned by `user` across one or more
+/// matcher-owned book accounts.
+///
+/// Wire format: disc(1) + num_books(2) = 3 bytes (the disc is stripped
+/// before this inner fn is called).
+///
+/// Accounts (fixed + variable):
+/// - index 0: writable Portfolio PDA
+/// - index 1: signer + writable User wallet (must match `portfolio.user`)
+/// - index 2: read-only Matcher program
+/// - indices 3..3+num_books: writable Book accounts (one per instrument the
+///   user has resting orders on; each is matcher-owned, derived as
+///   `["book", instrument_id_le]`)
+///
+/// Dispatches a `CancelAll` (disc 4) CPI to the matcher program for each
+/// book, carrying the user's pubkey as payload. The matcher removes every
+/// resting order with that owner. Un-revealed commitments are NOT touched
+/// (they expire via `CloseCommitting` / `SettleBatch` slash flow, M7 7.2).
+fn process_cancel_all_resting_orders_inner(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    if accounts.len() < 4 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    if data.len() < 2 {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    let portfolio_account = &accounts[0];
+    let user_account = &accounts[1];
+    let matcher_program = &accounts[2];
+    let num_books = u16::from_le_bytes(data[0..2].try_into().unwrap()) as usize;
+
+    if accounts.len() < 3 + num_books {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+
+    let book_accounts = &accounts[3..3 + num_books];
+
+    process_cancel_all_resting_orders(
+        program_id,
+        portfolio_account,
+        user_account,
+        matcher_program,
+        book_accounts,
+    )
 }
