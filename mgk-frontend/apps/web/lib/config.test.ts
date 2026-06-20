@@ -1,7 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const CORE_DEVNET = 'DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar';
+const CORE_DEVNET = 'CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5';
 const MATCHER_DEVNET = 'AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF';
 const ORACLE_DEVNET = '6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA';
 const SYSTEM_PROGRAM = '11111111111111111111111111111111';

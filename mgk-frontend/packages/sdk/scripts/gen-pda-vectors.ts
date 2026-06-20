@@ -13,7 +13,7 @@ import {
   deriveVaultPda,
 } from '../src/pda.js';
 
-const CORE = new PublicKey('DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar');
+const CORE = new PublicKey('CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5');
 const MATCHER = new PublicKey('AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF');
 const USER = new PublicKey('A6qbhK9mPRpFhX7D1kZsBpr2xNy8mfgU5J7Vu9xLE5Rp');
 const SALT = 0x123456789abcdef0n;

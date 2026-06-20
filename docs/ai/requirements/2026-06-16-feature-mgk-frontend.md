@@ -107,7 +107,7 @@ A v1 is successful when:
 - **No IDL** — mgk programs are Pinocchio, single-byte discriminator, raw-byte encoding. We must hand-write the TS instruction encoders (or generate them from a Rust-side `bs58`-style schema). No `@coral-xyz/anchor` IDL auto-loading.
 - **Single-byte discriminators** — every instruction is `data[0]` = u8 (0–12). Mapping table is the source of truth in the design doc.
 - **Commit-reveal is two transactions** — the UI must guide the user through this and persist the in-flight state (salt, batch_id, hash) across a refresh.
-- **Program IDs are real on devnet**: per `.superstack/build-context.md`, `mgk-perps-core` is `DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar` and `mgk-perps-matcher` is `9o2vTBBhEp6CYxNsDPsX79Euhzh8TtoLTSHR5R3jXebZ`. The matcher-oracle placeholders in `programs/common/src/program_ids.rs` are still zeros and need to be updated to match the on-chain deployment before the UI can submit.
+- **Program IDs are real on devnet**: per `.superstack/build-context.md`, `mgk-perps-core` is `CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5`, `mgk-perps-matcher` is `AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF`, and `percolator-oracle` is `6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA`. `programs/common/src/program_ids.rs` is updated. (Historical note: mgk-perps-core was originally `DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar` — that ID was closed 2026-06-20 and replaced with a fresh deploy.)
 - **SOL-only collateral** — no USDC, no other SPL mints in v1.
 - **Per-program data sizes matter** — Portfolio, Batch, Book, Registry PDAs all have non-host-equal BPF layouts (per memory: i128 alignment differs 16 vs 8). Decoders must read by BPF layout, not TS struct layout.
 

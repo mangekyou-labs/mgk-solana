@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { useBatchStore, type BatchPollParams } from './useBatchStore';
 
-const CORE_PK = new PublicKey('DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar');
+const CORE_PK = new PublicKey('CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5');
 const [REGISTRY_PDA] = sdk.deriveRegistryPda(CORE_PK);
 
 function makeRegistryBuffer(

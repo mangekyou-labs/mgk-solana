@@ -1,43 +1,54 @@
 //! Program ID getters for all Percolator programs.
 //!
 //! Returns canonical program addresses for CPI callers.
-//! Placeholder keypairs below — replace with real ed25519 pubkeys after deployment.
-//! Base58 addresses for reference:
-//!   Router:  RoutR1VdCpHqj89WEMJhb6TkGT9cPfr1rVjhM3e2YQr
-//!   Slab:    8HkaHrEmhP7R9UCUhHPibQTCjBFPgNVb4HEuvPzN28ox
-//!   AMM:     AMM111111111111111111111111111111111111111
-//!   Oracle:  orac11111111111111111111111111111111111111
-//!   Matcher: PERPMatcher111111111111111111111111111
-//!   Core:    PRPSCore11111111111111111111111111111111
 
 use pinocchio::pubkey::Pubkey;
 
-#[inline]
-pub fn router_program_id() -> Pubkey {
-    Pubkey::from([0u8; 32])
-}
+const PERPS_CORE_ID: Pubkey = [
+    0xb2, 0x2c, 0x67, 0xe6, 0xe6, 0xc3, 0x62, 0x1b,
+    0x3c, 0xdc, 0x47, 0xc1, 0x2f, 0x97, 0xd1, 0xce,
+    0x4e, 0x1b, 0x56, 0x11, 0xa8, 0x2e, 0x5d, 0x99,
+    0x44, 0xb6, 0xca, 0x23, 0x2c, 0xed, 0x6e, 0x1c,
+];
+
+const PERPS_MATCHER_ID: Pubkey = [
+    0x8c, 0xa7, 0x84, 0x12, 0xbd, 0x5e, 0x33, 0x17,
+    0xbd, 0x5b, 0x06, 0xd0, 0x54, 0xe4, 0x37, 0xf7,
+    0xae, 0x8d, 0x3c, 0x8f, 0x55, 0x67, 0x49, 0xcb,
+    0xb7, 0x25, 0x66, 0xc6, 0xa1, 0xa6, 0xe8, 0x4e,
+];
+
+const ORACLE_ID: Pubkey = [
+    0x4f, 0x73, 0xd2, 0x86, 0x46, 0xce, 0x11, 0xca,
+    0x22, 0x4f, 0x83, 0xe9, 0x1b, 0xd4, 0x2a, 0x06,
+    0xfc, 0xf4, 0x1a, 0x2d, 0xb1, 0x76, 0xcd, 0xb7,
+    0xb7, 0x66, 0xa4, 0x18, 0xbf, 0xa0, 0x47, 0xdd,
+];
 
 #[inline]
-pub fn slab_program_id() -> Pubkey {
-    Pubkey::from([0u8; 32])
-}
-
-#[inline]
-pub fn amm_program_id() -> Pubkey {
-    Pubkey::from([0u8; 32])
-}
-
-#[inline]
-pub fn oracle_program_id() -> Pubkey {
-    Pubkey::from([0u8; 32])
+pub fn perps_core_program_id() -> Pubkey {
+    PERPS_CORE_ID
 }
 
 #[inline]
 pub fn perps_matcher_program_id() -> Pubkey {
-    Pubkey::from([0u8; 32])
+    PERPS_MATCHER_ID
 }
 
 #[inline]
-pub fn perps_core_program_id() -> Pubkey {
-    Pubkey::from([0u8; 32])
+pub fn percolator_oracle_program_id() -> Pubkey {
+    ORACLE_ID
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_program_ids_are_not_zero() {
+        let zero = [0u8; 32];
+        assert_ne!(perps_core_program_id(), zero, "perps_core_program_id must not be zero");
+        assert_ne!(perps_matcher_program_id(), zero, "perps_matcher_program_id must not be zero");
+        assert_ne!(percolator_oracle_program_id(), zero, "percolator_oracle_program_id must not be zero");
+    }
 }

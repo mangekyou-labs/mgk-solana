@@ -3,7 +3,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { WebSocketServer } from 'ws';
 import { createStore } from './store.js';
 import { healthRoutes } from './rest/health.js';
-import { marketsRoutes, candlesRoutes, tradesRoutes, bookRoutes, batchRoutes } from './rest/routes.js';
+import { marketsRoutes, candlesRoutes, tradesRoutes, bookRoutes, batchRoutes, userFillsRoutes } from './rest/routes.js';
 import { createSubscriber } from './subscriber.js';
 import { createWsServer, broadcastFill, broadcastBatch } from './ws.js';
 import { backfillOnBoot } from './backfill.js';
@@ -13,7 +13,7 @@ const PORT = Number(process.env.PORT ?? 4000);
 const HOST = process.env.HOST ?? '0.0.0.0';
 const LOG_LEVEL = process.env.LOG_LEVEL ?? 'info';
 const RPC_URL = process.env.RPC_URL ?? 'https://api.devnet.solana.com';
-const CORE_PROGRAM_ID = process.env.CORE_PROGRAM_ID ?? 'DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar';
+const CORE_PROGRAM_ID = process.env.CORE_PROGRAM_ID ?? 'CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5';
 const MATCHER_PROGRAM_ID = process.env.MATCHER_PROGRAM_ID ?? 'AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF';
 const DB_PATH = process.env.DB_PATH ?? 'mgk-indexer.db';
 
@@ -34,6 +34,7 @@ async function main(): Promise<void> {
   await tradesRoutes(app, store);
   await bookRoutes(app, store, { connection, matcherProgramId: MATCHER_PROGRAM_ID });
   await batchRoutes(app, store);
+  await userFillsRoutes(app, store);
 
   let wss: WebSocketServer | undefined;
 

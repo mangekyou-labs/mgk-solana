@@ -13,9 +13,15 @@ import { PublicKey, clusterApiUrl } from '@solana/web3.js';
 // ID is reclaimable later. Oracle deployed at
 // `6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA` (was System Program
 // placeholder).
+//
+// 2026-06-20: perps-core ID changed from `DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar`
+// (ProgramData closed — cannot be redeployed or recreated) to fresh deploy
+// `CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5`. New keypair at
+// /tmp/perps-core-new.json. Update `.env.local` and rebuild any test vectors
+// that encode perps-core PDAs.
 const DEVNET_DEFAULTS = {
   rpcUrl: clusterApiUrl('devnet'),
-  coreProgramId: 'DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar',
+  coreProgramId: 'CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5',
   matcherProgramId: 'AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF',
   oracleProgramId: '6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA',
   indexerUrl: 'http://localhost:4000',

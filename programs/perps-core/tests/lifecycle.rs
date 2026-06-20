@@ -33,8 +33,10 @@ use solana_sdk::{
 const RESULTS_ACCOUNT_SIZE: usize = 2 + 128 * 49;
 
 /// Program IDs matching the keypairs in `target/deploy/`.
-const CORE_ID: Pubkey = solana_sdk::pubkey!("DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar");
-const MATCHER_ID: Pubkey = solana_sdk::pubkey!("9o2vTBBhEp6CYxNsDPsX79Euhzh8TtoLTSHR5R3jXebZ");
+/// (2026-06-20: perps-core fresh-deployed to CzWqtmcrm... — old DBrCzAMA... closed)
+const CORE_ID: Pubkey = solana_sdk::pubkey!("CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5");
+/// (2026-06-16: matcher re-deployed from broken canonical 9o2vTBBh... to AU4EKQAQ...)
+const MATCHER_ID: Pubkey = solana_sdk::pubkey!("AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF");
 
 /// PDA seeds (must match `programs/perps-core/src/pda.rs`).
 const REGISTRY_SEED: &[u8] = b"registry";
