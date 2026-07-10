@@ -70,3 +70,4 @@ desktop.ini
 tests/e2e/test-ledger/
 test-ledger/
 target/
+.vercel

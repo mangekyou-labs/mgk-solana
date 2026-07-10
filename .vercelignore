@@ -1,0 +1,17 @@
+target/
+programs/
+.agents/
+.claude/
+.cline/
+.commandcode/
+.opencode/
+.playwright-mcp/
+.worktrees/
+.superstack/
+.surfpool/
+.cargo/
+.github/
+mgk-frontend/apps/indexer/
+*.db
+*.db-shm
+*.db-wal
