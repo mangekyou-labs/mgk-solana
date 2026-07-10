@@ -1,14 +1,16 @@
 ---
 phase: design
 title: On-Chain Perpetuals DEX Design
-description: Commit-reveal CLOB with deterministic shuffle, structural priority queues, price-time matching, and Bulk.Trade-aligned safety stack
+description: Commit-reveal CLOB with deterministic shuffle, structural priority queues, price-time matching, and hedge-preserving safety stack
 ---
 
 # On-Chain Perpetuals DEX Design
 
 ## Architecture Overview
 
-A fully on-chain perpetual futures exchange on Solana using a **commit-reveal CLOB** model with **deterministic shuffle and structural priority queues** (aligned with Bulk.Trade's fair ordering design). Every order — submission, reveal, match, and settlement — executes on-chain. MEV is mitigated through sealed commitments. Within each batch, revealed orders are shuffled using Fisher-Yates seeded by the close slot, then separated into priority queues (cancels → post-only/ALO → regular), then matched against the resting order book with price-time priority. GTC orders that don't cross the spread rest on the book for future batches.
+A fully on-chain perpetual futures exchange on Solana using a **commit-reveal CLOB** with **deterministic shuffle and structural priority queues**. Every order — submission, reveal, match, and settlement — executes on-chain. MEV is mitigated through sealed commitments: orders are committed as hashes during a commit phase, revealed after the commit phase closes, shuffled deterministically by the close slot, separated into structural priority queues (cancels → post-only/ALO → regular), then matched against the resting book with price-time priority. GTC orders that don't cross the spread rest on the book for future batches.
+
+The fair-ordering and safety-stack designs follow [Bulk.Trade](https://docs.bulk.trade): deterministic Fisher-Yates shuffle, structural priority queues, price-time priority CLOB, and a hedge-preserving liquidation optimizer → insurance fund → ADL safety stack. Bulk.Trade's Layer 1 (quorum-controlled admission via BULKBFT) cannot be replicated on-chain; commit-reveal substitutes as our Layer 1 MEV protection.
 
 ```mermaid
 graph TD
@@ -17,8 +19,8 @@ graph TD
     end
 
     subgraph "On-Chain Programs"
-        CORE[Core Program<br/>Portfolio Mgmt<br/>Batch Lifecycle<br/>CLOB State<br/>Funding Accrual]
-        MATCH[Matching Engine<br/>Price-Time Priority CLOB<br/>Self-Trade Prevention<br/>Risk Callbacks]
+        CORE[Core Program<br/>Portfolio Mgmt<br/>Batch Lifecycle<br/>CLOB State<br/>Funding Accrual<br/>Mark Price]
+        MATCH[Matching Engine<br/>Price-Time Priority CLOB<br/>Self-Trade Prevention<br/>Risk Callbacks<br/>Toxic-Taker Scoring]
         FALLBACK[Fallback Oracle<br/>Auto-activate on Pyth staleness<br/>Admin override available]
     end
 
@@ -28,12 +30,13 @@ graph TD
 
     subgraph "Permissionless Keepers"
         CRANK[Batch Crank<br/>Closes, clears, settles batches]
-        LIQ[Liquidator<br/>Hedge-preserving optimizer<br/>ADL as last resort]
+        LIQ[Liquidator<br/>Watches portfolio health<br/>Triggers LiquidateUser]
+        RELAYER[Pre-signed Reveal Relayer<br/>Submits user-signed reveal<br/>within 1 slot of commit]
     end
 
     subgraph "Safety Stack"
-        OPTIMIZER[Liquidation Optimizer<br/>Hedge-preserving reduction<br/>Impact-ratio ranking]
-        INSURANCE[Insurance Fund<br/>Fee-accrued<br/>Absorbs bad debt]
+        OPTIMIZER[Liquidation Optimizer<br/>Hedge-preserving reduction<br/>Impact-ratio ranking<br/>Inventory tiebreaker]
+        INSURANCE[Insurance Fund<br/>Fee-accrued<br/>Base/quote inventory<br/>Absorbs bad debt]
         ADL[Auto-Deleveraging<br/>Deleverage profitable counterparties<br/>Pro-rata by score]
     end
 
@@ -50,20 +53,21 @@ graph TD
     OPTIMIZER -->|market sweep against book| MATCH
     OPTIMIZER -->|shortfall?| INSURANCE
     INSURANCE -->|insufficient?| ADL
+    RELAYER -->|submit pre-signed RevealOrder| CORE
 ```
 
 **Key architectural principle:** The Core Program is the single custody authority. All SOL collateral lives in Core-controlled vaults/PDA portfolios. The Matching Engine holds the order book state but never holds funds. This follows the Solana "authority isolation" pattern: only one program can move user funds.
 
-**Fair ordering principle (aligned with Bulk.Trade):** Bulk.Trade does NOT use FIFO ordering. Instead it uses a 4-layer fair ordering system: (1) quorum-controlled batch admission, (2) deterministic Fisher-Yates shuffle, (3) structural priority queues, (4) price-time priority on the CLOB. Since we cannot replicate quorum admission on-chain (it requires BULKBFT consensus), we use commit-reveal as our Layer 1 MEV protection, then adopt Bulk.Trade's Layers 2-4: deterministic shuffle seeded by close_slot, structural priority queues (cancels → post-only/ALO → regular), and price-time priority CLOB matching. Orders that don't cross the spread rest on the book as GTC orders, providing persistent liquidity across batches.
+**Fair ordering principle:** 4-layer fair ordering — (1) commit-reveal as MEV protection, (2) deterministic Fisher-Yates shuffle seeded by close_slot, (3) structural priority queues (cancels → post-only/ALO → regular), (4) price-time priority CLOB. Orders that don't cross the spread rest on the book as GTC orders, providing persistent liquidity across batches.
 
-**Safety stack principle (aligned with Bulk.Trade):** Liquidation optimizer (hedge-preserving, impact-ratio ranked) → Insurance fund → Auto-Deleveraging (ADL). The optimizer selectively reduces positions that contribute most to portfolio risk while preserving hedges. ADL deleverages profitable counterparties as a last resort — ranked by `max(1, PnL)^w * leverage^(1-w)` and allocated pro-rata.
+**Safety stack principle:** Liquidation optimizer (hedge-preserving, impact-ratio ranked) → Insurance fund → Auto-Deleveraging (ADL). The optimizer selectively reduces positions that contribute most to portfolio risk while preserving hedges. ADL deleverages profitable counterparties as a last resort — ranked by `max(1, PnL)^w * leverage^(1-w)` and allocated pro-rata.
 
-## Why Not FIFO (From Bulk.Trade)
+## Why Not FIFO
 
-FIFO creates time-based advantages for colocated participants who can submit orders faster. Bulk.Trade's deterministic shuffle eliminates any time-based priority within a batch, making submission order irrelevant. Combined with structural priority queues, this provides fairness guarantees that FIFO cannot:
+FIFO creates time-based advantages for colocated participants who can submit orders faster. Deterministic shuffle eliminates any time-based priority within a batch, making submission order irrelevant. Combined with structural priority queues, this provides fairness guarantees that FIFO cannot:
 
 | FIFO Weakness | Shuffle + Priority Queue Fix |
-|---------------|------------------------------|
+|---|---|
 | Time advantage for colocated/fast participants | Shuffle randomizes order within batch — submission time is irrelevant |
 | No guarantee cancels execute before fills | Cancels always execute before all order types (structural priority) |
 | No guarantee makers seed book before takers cross | Post-only/ALO orders execute before regular orders (structural priority) |
@@ -78,7 +82,7 @@ FIFO creates time-based advantages for colocated participants who can submit ord
 - **Collateral vault**: PDA-controlled SOL vault, deposit/withdraw with margin checks
 - **CLOB state owner**: Owns order book accounts, manages resting order lifecycle (place, cancel, modify)
 - **Custody**: Only program authorized to move user funds
-- **Mark price computation**: Simplified composite of depth-weighted book mid + oracle fallback
+- **Mark price computation**: Depth-weighted book mid + oracle fallback
 
 ### Matching Engine Program
 - **CLOB matching**: Price-time priority order book. Aggressive orders walk the book; passive orders rest at their limit price. Each fill at the resting order's price (maker price).
@@ -86,18 +90,19 @@ FIFO creates time-based advantages for colocated participants who can submit ord
 - **Structural priority queues**: After shuffle, orders are separated: cancels → post-only/ALO → regular. Within each queue, execution follows shuffled order.
 - **Self-trade prevention**: When an incoming order would match against a resting order from the same account, the resting order is cancelled (not matched).
 - **Risk callbacks**: After each fill, verify the resulting position remains within margin limits. If a fill would cause a margin breach, cancel the remainder.
+- **Toxic-taker scoring**: Per-address per-instrument flow-quality score; toxic flow faces widened spreads. See § Toxic-Taker Detection.
 - **Stateful**: Maintains persistent order book accounts (bids + asks) across batches. GTC orders rest on the book between batch clearing cycles.
 
 ### Oracle Layer (Pyth + Fallback)
 
-**Design principle**: Trading prices must emerge from two-sided orderbook flow between competing participants — not from an external feed. Pyth serves only as a reference anchor for funding rate calculation, mark price stabilization, and liquidation risk assessment. It never determines execution price.
+**Design principle:** Trading prices emerge from two-sided orderbook flow between competing participants — not from an external feed. Pyth serves only as a reference anchor for funding rate calculation, mark price stabilization, and liquidation risk assessment. It never determines execution price.
 
 **Primary: Pyth pull oracle**
 - Pyth provides battle-tested, decentralized price feeds for BTC/USD, ETH/USD, SOL/USD
 - Pull model: Core Program reads Pyth price accounts directly via `pyth-solana-receiver-sdk`
 - Validates price freshness (configurable `max_staleness_slots` per instrument), confidence interval, and trading status
-- **Role**: Index price for funding rate, mark price oracle component, liquidation marking
-- **Not**: Trade execution price — that's discovered on-chain via CLOB matching
+- **Role:** Index price for funding rate, mark price oracle component, liquidation marking
+- **Not:** Trade execution price — that's discovered on-chain via CLOB matching
 
 **Fallback: Minimal on-chain oracle**
 - Governance can push a manual price to a fallback oracle account
@@ -106,36 +111,73 @@ FIFO creates time-based advantages for colocated participants who can submit ord
 - Same `PriceFeed` struct, managed by admin key
 - Auto-activation check runs inline during any instruction that reads oracle prices
 
-### Liquidation Optimizer (Simplified from Bulk.Trade)
-- **Hedge-preserving**: Positions where closing would NOT reduce portfolio margin are skipped (they are hedges)
-- **Impact-ratio ranking**: Positions ranked by `IR = margin_reduction / market_impact_cost`. Best ratio liquidated first.
-- **Iterative**: Up to 10 rounds (simplified from Bulk.Trade's 100). Reduces 5-25% of position size per round based on urgency.
-- **Fallback**: If optimizer cannot restore margin after all rounds, full flat of all positions.
-- **ADL trigger**: If liquidation produces shortfall beyond insurance fund, ADL activates.
+### Liquidation Optimizer
+- **Hedge-preserving:** Positions where closing would NOT reduce portfolio margin are skipped (they are hedges)
+- **Impact-ratio ranking:** Positions ranked by `IR = margin_reduction / market_impact_cost`. Best ratio liquidated first.
+- **Iterative:** Up to 10 rounds. Reduces 5–25% of position size per round based on urgency.
+- **Fallback:** If optimizer cannot restore margin after all rounds, full flat of all positions.
+- **ADL trigger:** If liquidation produces shortfall beyond insurance fund, ADL activates.
+- **Inventory tiebreaker:** When two positions have the same IR, prefer the reduction that moves insurance fund inventory toward target balance. See § Insurance Fund.
 
 ### Keepers (Permissionless Off-Chain Agents)
-- **Batch Crank**: Closes committing phase when batch criteria met, triggers clearing, settles batch
-- **Liquidator**: Monitors portfolio health, runs liquidation optimizer, executes market sweeps against book
+
+mgk is fully on-chain in *execution* (every fill, settlement, liquidation verifiable on-chain), but the protocol does not self-advance. Batches need a crank; liquidations need a watcher; the short-batch reveal window needs a relayer. Three permissionless Node.js / TypeScript bots (~550 LOC total) cover these roles. Anyone can run any of them; the protocol is safe under single-keeper operation (degraded) and improves with multiple competing keepers.
+
+#### Batch Crank
+
+**Role:** Advances the batch lifecycle — calls `CloseCommitting` when batch cadence criteria are met (`N_commitments >= N_min AND slot_age >= T_min` OR `slot_age >= T_max`), then `ClearBatch`, then `SettleBatch`.
+
+**Stack:** Node.js / TypeScript, ~150 LOC, single-Docker deploy. Watches `Batch.status == Committing` via RPC poll or log subscription. Production-grade: retry queue, RPC failover, slack webhook on missed crank slot.
+
+**Economics:** Earns ~10% of batch taker fees. At devnet scale this is a no-op cost check; at mainnet scale it scales with taker volume. Anyone is incentivized to step in if the primary crank is down — permissionless.
+
+**Measurement target (devnet):** Cranks ≥10 batches at ≤1 slot lag average; ≥95% uptime over a 7-day measurement window.
+
+#### Liquidator
+
+**Role:** Watches portfolio health via indexer WebSocket, computes effective leverage vs maintenance margin per portfolio, raises alert + invokes `LiquidateUser` when equity breaches `M_p`.
+
+**Stack:** Node.js / TypeScript, ~300 LOC. Indexer-backed monitoring with **on-chain state re-verification before each `LiquidateUser` call** (no stale-DB liquidations — every executed `LiquidateUser` corresponds to a portfolio actually underwater on-chain at the tx slot). Priority-fee retry queue, keeper-keyed instrumentation for fee capture measurement.
+
+**Note:** The liquidator bot is in the *trigger* path, not the *optimizer* path. The hedge-preserving optimizer runs on-chain inside `LiquidateUser`; the bot only fires the call and captures the fee.
+
+**Economics:** Earns ~2.5% of liquidated notional. Real gas cost on Solana devnet is ~$0.00025/tx; liquidator profitability = `revenue - gas - VPS_ops` ≥ $0. Multiple competing liquidators keep each other honest.
+
+**Measurement target (devnet):** Executes ≥10 synthesized underwater portfolios → `LiquidateUser` txs with `err: None`; detects underwater portfolios within 1 slot average; zero stale-DB liquidations; positive returns after gas.
+
+#### Pre-signed Reveal Relayer (Short-Batch)
+
+**Role:** Watches for confirmed `CommitOrder` transactions in the user's wallet, immediately submits the pre-signed `RevealOrder` transaction the user signed earlier; submits within 1 slot of commit confirmation. Eliminates slash risk from the tight ~1.2s reveal window — the user never needs to sign a second time.
+
+**Stack:** Node.js / TypeScript, ~100 LOC. Priority-fee escalation if `reveal_deadline - commits_detector_lag` is tight, failover to backup RPC, slack alert on missed reveal.
+
+**Relayer never has custody:** it submits a user-signed tx with fixed instructions; the relayer key cannot redirect funds.
+
+**Relayer fee model:** 0.5% of locked commitment deposit, governance-configurable, deducted from deposit return on successful reveal. Multiple competing relayers keep fees honest.
+
+**Blockhash expiry handling:** Solana pre-signed txs expire ~60–90s after signing. The ~1.2s reveal window is well within this. Edge case: commit tx delayed by network congestion → pre-signed reveal may approach blockhash expiry. Mitigation: if commit confirmation arrives past ~80% of blockhash validity window, the relayer re-requests signing from the user's wallet via a frontend callback. The user re-signs with a fresh blockhash; relayer submits the new pre-signed reveal.
+
+**Measurement target (devnet):** ≥95% of reveals submitted within 1 slot of commit confirmation; zero user slashes from reveal-window timeout across ≥50 test orders.
 
 ## Batch Lifecycle
 
 A trading **batch** progresses through four phases. The CLOB persists across batches — resting orders survive between clearing cycles.
 
 ```
-                     close_committing              clear_batch                          settle_batch
-                     records close_slot            1. Fisher-Yates shuffle
-                          |                       2. Priority queue separation
-                          |                       3. CLOB match: cancels, ALO, regular
-                          |                       4. Resting orders stay on book
-  ┌──────────────┐      ▼      ┌──────────────┐      ▼      ┌──────────────┐      ▼      ┌──────────────┐
-  │  COMMITTING  │────►│  REVEALING   │────►│   CLEARING   │────►│   SETTLED    │
-  │              │             │              │              │             │              │
-  │ Users submit │             │ Users reveal │             │ Shuffle +   │ Positions    │
-  │ hashed orders│             │ order params │             │ priority    │ updated.     │
-  │ + deposits   │             │ + salts +    │             │ queues +    │ Deposits back│
-  │ + cancels    │             │ order type   │             │ CLOB match  │ Funding      │
-  │              │             │              │             │ GTC rests   │ accrued.     │
-  └──────────────┘             └──────────────┘             └──────────────┘              └──────────────┘
+                      close_committing              clear_batch                          settle_batch
+                      records close_slot            1. Fisher-Yates shuffle
+                           |                       2. Priority queue separation
+                           |                       3. CLOB match: cancels, ALO, regular
+                           |                       4. Resting orders stay on book
+   ┌──────────────┐      ▼      ┌──────────────┐      ▼      ┌──────────────┐      ▼      ┌──────────────┐
+   │  COMMITTING  │────►│  REVEALING   │────►│   CLEARING   │────►│   SETTLED    │
+   │              │             │              │              │             │              │
+   │ Users submit │             │ Users reveal │             │ Shuffle +   │ Positions    │
+   │ hashed orders│             │ order params │             │ priority    │ updated.     │
+   │ + deposits   │             │ + salts +    │             │ queues +    │ Deposits back│
+   │ + cancels    │             │ order type   │             │ CLOB match  │ Funding      │
+   │              │             │              │             │ GTC rests   │ accrued.     │
+   └──────────────┘             └──────────────┘             └──────────────┘              └──────────────┘
 ```
 
 ### Phase 1: Committing
@@ -150,64 +192,63 @@ A trading **batch** progresses through four phases. The CLOB persists across bat
 ### Phase 2: Revealing
 - Users reveal their actual order parameters + salt
 - Core Program verifies `hash(order_type, side, price, qty, salt, user, batch_id) == stored_commitment`
-- Reveal deadline: `T_reveal` after commit phase closes (e.g., 5 seconds / ~12 slots)
+- Reveal deadline: `T_reveal` after commit phase closes (e.g., 3 slots / ~1.2s in short-batch mode)
 - Users who **do not reveal** by deadline: **commitment deposit fully slashed**, order excluded from batch
 
 ### Phase 3: Clearing
 - Crank calls `clear_batch(batch_id)` on the Core Program
 - Core sends all revealed orders plus the close slot to the Matching Engine via CPI
-- **Step 1 — Shuffle**: Fisher-Yates shuffle of all revealed orders, seeded by `close_slot` as PRNG seed. This randomizes order within the batch, making submission timing irrelevant.
-- **Step 2 — Priority queue separation**:
+- **Step 1 — Shuffle:** Fisher-Yates shuffle of all revealed orders, seeded by `close_slot` as PRNG seed. This randomizes order within the batch, making submission timing irrelevant.
+- **Step 2 — Priority queue separation:**
   1. **Cancel orders** (cancel-one, cancel-all) — execute first
   2. **Post-only / ALO orders** — execute second (must rest on book; rejected if would cross spread)
   3. **Regular orders** (market, limit GTC, limit IOC) — execute third
-- **Step 3 — CLOB matching**: Within each priority queue, process orders in shuffled order:
+- **Step 3 — CLOB matching:** Within each priority queue, process orders in shuffled order:
   - **Aggressive orders** (market, or limit that crosses the spread): Walk the book, match against resting orders at best available prices. Each fill at the resting (maker) order's limit price. Risk callback after each fill — if fill would breach margin, cancel remainder.
   - **Passive orders** (limit that doesn't cross): Rest on the book at their limit price as GTC orders.
-  - **ALO orders**: If they would cross the spread (take liquidity), they are **rejected** (`rejectedCrossing`). Otherwise they rest on the book as maker orders.
-  - **IOC orders**: Fill what's available immediately. Unfilled remainder is cancelled.
-- **Step 4 — Resting orders persist**: GTC orders that weren't matched or cancelled remain on the book for future batches. The book is not cleared between batches.
+  - **ALO orders:** If they would cross the spread (take liquidity), they are **rejected** (`rejectedCrossing`). Otherwise they rest on the book as maker orders.
+  - **IOC orders:** Fill what's available immediately. Unfilled remainder is cancelled.
+- **Step 4 — Resting orders persist:** GTC orders that weren't matched or cancelled remain on the book for future batches. The book is not cleared between batches.
 - Core updates portfolio positions and PnL for each fill
 
 ### Phase 4: Settled
 - Commitment deposits returned to filled users (net of trading fees)
 - Maker rebates applied (maker_fee_bps is typically negative — rebate)
 - Slashed deposits from non-revealing users credited to insurance fund
-- **Funding accrual**: Mark price computed, premium calculated, `cum_funding` updated, funding payments applied to portfolios with positions
+- **Funding accrual:** Mark price computed, premium calculated, `cum_funding` updated, funding payments applied to portfolios with positions
 - Batch status finalized; next batch opens (but book state carries over)
 
 ### Dynamic Batch Cadence Parameters
 
-| Parameter | Purpose | Suggested Default |
-|-----------|---------|-------------------|
-| `N_min` | Minimum commitments to allow early close | 5 |
-| `T_min` | Minimum time before early close (slots) | 10 |
-| `T_max` | Maximum time before forced close (slots) | 150 |
-| `T_reveal` | Reveal phase duration (slots) | 25 |
+| Parameter | Purpose | Long-batch | Short-batch |
+|---|---|---|---|
+| `N_min` | Minimum commitments to allow early close | 5 | 5 |
+| `T_min` | Minimum time before early close (slots) | 10 | 2 (~0.8s) |
+| `T_max` | Maximum time before forced close (slots) | 150 | 15 (~6s) |
+| `T_reveal` | Reveal phase duration (slots) | 25 | 3 (~1.2s) |
 
 ## Technology Choices & Rationale
 
 | Choice | Rationale |
-|--------|-----------|
+|---|---|
 | **Rust + Pinocchio** | `no_std`, zero-allocation, BPF-compatible. No Anchor overhead. |
-| **Commit-reveal** | Eliminates mempool front-running. Order contents hidden during commitment. Salt committed in hash prevents strategic ordering. Replaces Bulk.Trade's quorum-controlled admission (infeasible on-chain). |
-| **Deterministic shuffle + structural priority queues** | Aligned with Bulk.Trade's fair ordering Layers 2-3. Fisher-Yates shuffle eliminates time-advantage. Priority queues ensure cancels before fills, makers before takers. |
-| **CLOB with resting orders** | Aligned with Bulk.Trade's execution model. Orders persist on the book across batches. Capital-efficient — makers earn rebates, liquidity accumulates. Price-time priority matching. |
+| **Commit-reveal** | Eliminates mempool front-running. Order contents hidden during commitment. Salt committed in hash prevents strategic ordering. |
+| **Deterministic shuffle + structural priority queues** | Fisher-Yates shuffle eliminates time-advantage. Priority queues ensure cancels before fills, makers before takers. |
+| **CLOB with resting orders** | Orders persist on the book across batches. Capital-efficient — makers earn rebates, liquidity accumulates. Price-time priority matching. |
 | **Cross-margin** | Capital efficiency. Profits on one instrument offset margin on another. Same portfolio, lower total IM. |
 | **SOL-only collateral** | Simplifies vault management, reduces oracle dependency for collateral pricing, eliminates multi-token LP fragmentation. |
 | **Pyth oracle (primary) + admin fallback** | Spot anchor for funding + liquidation + mark price. Trading price discovered on-chain via CLOB two-sided flow — Pyth is reference-only, never determines execution price. Fallback auto-activates on staleness. |
-| **Permissionless keepers** | No single point of failure. Anyone can crank batches, liquidate, or update oracles (with auth). Incentivized by fees/slashes. |
+| **Permissionless keepers** | No single point of failure. Anyone can crank batches, liquidate, or relay reveals. Incentivized by fees/slashes. |
 | **Three-program separation** | Core (custody + book) / Matching (compute) / Oracle (data). Enables independent upgrades via separate program IDs. |
 | **Kani formal verification** | Bit-precise model checking of safety-critical invariants: conservation, margin consistency, liquidation progress, batch integrity. |
-| **Liquidation optimizer + ADL** | Aligned with Bulk.Trade's safety stack. Hedge-preserving optimizer first, then insurance, then ADL as last resort. No global haircut. |
+| **Liquidation optimizer + ADL** | Hedge-preserving optimizer first, then insurance, then ADL as last resort. No global haircut. |
 | **Static margin tiers for MVP** | IMR/MMR per instrument as BPS. Correlation-adjusted notional and lambda surfaces deferred to post-MVP. |
-| **Simplified composite mark price** | Depth-weighted book mid + oracle fallback when book stale. Full 3-component model deferred to post-MVP. |
 | **Single admin governance** | One key controls parameters. Simple, fast iteration. Upgrade to multisig before mainnet. |
 
-## Order Types (Aligned with Bulk.Trade)
+## Order Types
 
 | Type | Behavior |
-|------|----------|
+|---|---|
 | **Limit (GTC)** | Rests on the book at specified price. Fills at maker price if crossed by aggressive order. Remains until filled or cancelled. |
 | **Limit (IOC)** | Fills what's available immediately against resting book. Unfilled remainder is cancelled. Never rests on the book. |
 | **Limit (ALO / Post-Only)** | Must rest on the book as a maker order. If it would cross the spread and take liquidity, **rejected** (`rejectedCrossing`). Guarantees maker fee or no execution. |
@@ -387,6 +428,20 @@ struct Instrument {
 }
 ```
 
+### Flow Quality Score (Core Program)
+
+PDA: `["flow_quality", address, instrument_id]`. One per address per instrument. Updated at the end of each `settle_batch` over a rolling 100-batch window.
+
+```rust
+struct FlowQualityScore {
+    address: Pubkey,
+    instrument_id: u16,
+    score: i128,          // mean PnL-to-protocol over rolling window
+    batches_sampled: u32,
+    last_update_batch: u64,
+}
+```
+
 ### Fallback Oracle Price Feed
 
 ```rust
@@ -406,7 +461,7 @@ struct FallbackPrice {
 ### Core Program Instructions
 
 | Disc | Instruction | Input | Accounts | Auth |
-|------|-------------|-------|----------|------|
+|---|---|---|---|---|
 | `0` | Initialize | instrument_registry | payer | Governance |
 | `1` | InitPortfolio | — | portfolio_pda, user, payer | User signer |
 | `2` | Deposit | lamports | portfolio, vault, user_wallet | User signer |
@@ -426,7 +481,7 @@ struct FallbackPrice {
 ### Matching Engine Program Instructions
 
 | Disc | Instruction | Input | Output |
-|------|-------------|-------|--------|
+|---|---|---|---|
 | `0` | ShuffleAndMatch | revealed_orders[], close_slot, book_state | fills: [(user, filled_qty, notional, is_maker)…], updated_book_state |
 
 The Matching Engine receives revealed orders + close_slot, performs:
@@ -441,7 +496,7 @@ Returns fill receipts and updated book state.
 ### Fallback Oracle Program Instructions
 
 | Disc | Instruction | Input | Auth |
-|------|-------------|-------|------|
+|---|---|---|---|
 | `0` | Initialize | instrument_id, price, confidence | Admin |
 | `1` | SetPrice | price, confidence | Admin |
 | `2` | SetAuthority | new_authority | Admin |
@@ -451,9 +506,10 @@ Returns fill receipts and updated book state.
 ### Keeper Incentives
 
 | Keeper | Revenue Source |
-|--------|---------------|
+|---|---|
 | Batch Crank | Portion of taker fees from batch (~10%) |
 | Liquidator | Liquidation bonus (~2.5% of liquidated notional) |
+| Reveal Relayer | Small fee from commitment deposit return (~0.5%) |
 
 ### CPI Relationships
 
@@ -463,13 +519,14 @@ Core ──READ──► Pyth accounts   (pull index price for funding + mark pr
 Core ──READ──► Fallback Oracle  (if Pyth stale/frozen)
 Liquidator ──CALL──► Core      (liquidate_user → optimizer → market sweep against book)
 Crank ──CALL──► Core           (close_committing, clear_batch, settle_batch)
+Relayer ──CALL──► Core         (submit pre-signed RevealOrder)
 ```
 
 **Critical rules:** Matching Engine never calls Core. Only Core holds custody. Pyth is read-only (no CPI). Book state lives in Matching Engine accounts but is owned/rent-exempted by Core.
 
-## Mark Price Model (Simplified Composite)
+## Mark Price Model
 
-Aligned with Bulk.Trade's philosophy: mark price should reflect executable prices, not just top-of-book.
+**Design principle:** Mark price should reflect executable prices, not just top-of-book. The primary input is the depth-weighted book mid; the oracle is a fallback when the book is stale or thin.
 
 ### Primary: Depth-Weighted Book Mid
 
@@ -501,11 +558,11 @@ This ensures fair pricing even in low-liquidity conditions, smoothly transitioni
 
 During `settle_batch`, mark price is computed per instrument. If the batch had fills, use the composite mark. If no fills, carry forward from previous batch. First batch uses oracle index price.
 
-## Funding Rate Design (Aligned with Bulk.Trade)
+## Funding Rate Design
 
 ### Depth-Weighted Premium
 
-Aligned with Bulk.Trade's approach: premium is computed from depth-weighted bid/ask vs oracle, not simple mid-price.
+Premium is computed from depth-weighted bid/ask vs oracle, not simple mid-price:
 
 ```
 P_bid = sweep(sell, sample_notional)
@@ -516,7 +573,7 @@ delta = max(P_bid - P_oracle, 0) - max(P_oracle - P_ask, 0)
 premium_sample = delta / P_oracle
 ```
 
-Multiple samples are taken during the batch (at each clear cycle). The funding rate uses a simple moving average (SMA) of premium samples:
+Multiple samples are taken during the batch (at each clear cycle). The funding rate uses a simple moving average (SMA) of premium samples.
 
 ### Formula
 
@@ -527,7 +584,7 @@ F = clamp(P_mu + clamp(interest_rate - P_mu, -deviation_cap, deviation_cap), -fu
 ```
 
 | Parameter | Description | Default |
-|-----------|-------------|---------|
+|---|---|---|
 | `interest_rate` | Base interest rate (bps) | 1 |
 | `deviation_cap` | Max deviation of interest from premium (bps) | 5 |
 | `funding_cap` | Absolute clamp on funding rate (bps) | 50 |
@@ -554,7 +611,7 @@ position.last_funding_checkpoint = cum_funding_current
 
 Longs pay shorts when `funding_rate > 0` (mark > index). Shorts pay longs when `funding_rate < 0` (mark < index).
 
-## Liquidation & Safety Stack (Aligned with Bulk.Trade)
+## Liquidation & Safety Stack
 
 ### Trigger Condition
 
@@ -589,17 +646,19 @@ IR = margin_reduction / estimated_market_impact
 
 Where `estimated_market_impact` comes from order book depth at the reduction size. The position with the highest IR is reduced first.
 
+**Inventory tiebreaker:** When two positions have the same IR, prefer the reduction that moves insurance fund inventory toward target balance (e.g., 50/50 base/quote). IR remains the primary ranking signal — inventory is a soft tiebreaker only.
+
 Reduction fraction based on urgency:
 
 | Condition | Reduction Fraction |
-|-----------|-------------------|
+|---|---|
 | gap > 30% of M_p | 25% of position |
 | gap > 10% of M_p | 10% of position |
 | gap under 10% of M_p | 5% of position |
 
 ### Step 4: Iterate
 
-Apply best reduction, recompute gap, repeat. Up to 10 iterations (simplified from Bulk.Trade's 100). If optimizer cannot resolve, **full flat** of all positions.
+Apply best reduction, recompute gap, repeat. Up to 10 iterations. If optimizer cannot resolve, **full flat** of all positions.
 
 ### Step 5: Execute via Market Sweep
 
@@ -609,13 +668,15 @@ Planned reductions are executed against the order book as market sweep orders. P
 
 If liquidation produces a **shortfall** (losses exceed account collateral), the insurance fund absorbs the bad debt. No liquidation fee charged to traders.
 
+The fund tracks its own base/quote inventory separately (`insurance_base_reserves` and `insurance_quote_reserves` in the `Vault` struct) so the liquidation optimizer can prefer rebalancing sweep directions. Without inventory tracking, repeated liquidations in one direction can leave the fund one-sided. The rebalancing tiebreaker keeps the fund diversified without manual intervention.
+
 ### Auto-Deleveraging (ADL)
 
 ADL activates when:
 1. Insurance fund cannot cover the shortfall from a liquidation, OR
 2. There is unfilled liquidation volume (insufficient book liquidity for market sweep)
 
-**Ranking**: Profitable counterparties on the opposite side ranked by:
+**Ranking:** Profitable counterparties on the opposite side ranked by:
 
 ```
 score = max(1, PnL)^w * leverage^(1-w)
@@ -623,7 +684,7 @@ score = max(1, PnL)^w * leverage^(1-w)
 
 Where `w` is a configurable bias parameter (default: 0.5). Highest profits + highest leverage are deleveraged first.
 
-**Allocation**: Deleveraging size distributed pro-rata by score:
+**Allocation:** Deleveraging size distributed pro-rata by score:
 
 ```
 ADL_size_i = total_shortfall * (score_i / sum_of_all_scores)
@@ -645,12 +706,41 @@ Margin breach detected
                         → No: ADL — deleverage profitable counterparties
 ```
 
+## Toxic-Taker Detection
+
+The matcher maintains a per-address, per-instrument flow-quality score computed from historical PnL-to-protocol over a rolling window of the last N batches. Takers with scores below a configurable threshold face widened spreads or withheld depth.
+
+**Implementation location:** `state/risk_callback.rs` — extended with a pre-fill check.
+
+**Flow-quality score:**
+
+```
+score = sum(PnL_to_protocol_over_N_batches[address, instrument]) / N
+```
+
+Where `PnL_to_protocol_over_N_batches` = sum of (maker_rebates - taker_fees - funding_payments) for all fills by this address over the N most-recent batches.
+
+- Score > 0: benign taker (net payer to the protocol)
+- Score ≤ 0: toxic taker (net drainer of the protocol)
+- Threshold configurable via governance
+- Default: N = 100 batches (rolling window)
+
+**Matcher behavior when toxic taker detected:**
+1. **Spread widening:** effective spread for this taker is multiplied by `max(1.0, spread_multiplier)` where `spread_multiplier = 1.0 + (|score| / threshold)` capped at a max multiplier
+2. **Depth withholding (alternative):** resting orders at the top of the book are not visible to this taker; they see depth starting from level 2
+
+The taker is never hard-rejected (always a valid fill path). The effect is economic friction, not exclusion.
+
+**Per-instrument scoring:** A taker's score is tracked independently per instrument. Being toxic on SOL-PERP does not affect their BTC-PERP score.
+
+**Storage:** `FlowQualityScore` PDA: `["flow_quality", address, instrument_id]`. Updated at the end of each `settle_batch`.
+
 ## MEV Protection Analysis
 
 ### Threats Mitigated
 
 | Attack | Mitigation |
-|--------|-----------|
+|---|---|
 | **Mempool front-running** | Order contents hidden via hash commitment — attacker cannot see price/qty/type to front-run |
 | **Sandwich attacks** | Shuffle randomizes within batch — no insertion vector. Structural priority (cancels first, ALO before regular) prevents interleaving. |
 | **Priority ordering manipulation** | Shuffle seed = `close_slot`, unknown during commit. No FIFO sort keys to grind. |
@@ -662,92 +752,49 @@ Margin breach detected
 ### Remaining Vulnerabilities
 
 | Vulnerability | Severity | Mitigation |
-|---------------|----------|------------|
+|---|---|---|
 | **Cross-batch front-running** | Medium | Attacker could see resting orders on the book and submit commitments for next batch. Shuffle + new seed per batch limits advantage. Resting orders are visible but their execution is not guaranteed (new orders may take priority). |
 | **Shuffle seed manipulation** | Low | Close slot is set at `close_committing` time. Validators could theoretically delay/advance the close to influence the seed, but the benefit is bounded (shuffle is random, not controllable). |
 | **Crank censorship** | Low | Permissionless crank — anyone can step in. |
 | **Oracle manipulation** | Low | Pyth's decentralized publisher network. Fallback admin-only. Staleness + confidence checks. |
+| **Toxic-taker detection gaming** | Low | Score is computed over a rolling 100-batch window; old benign activity doesn't protect recent toxic activity. Spread widening is capped, not unbounded. |
 
 ## Major Design Decisions & Trade-offs
 
 ### 1. Commit-Reveal CLOB vs Continuous CLOB vs Batch Auction
 
-**Chosen: Commit-Reveal CLOB** (aligned with Bulk.Trade's execution model)
+**Chosen: Commit-Reveal CLOB.** Eliminates mempool MEV. CLOB with resting orders provides persistent liquidity. Structural priority queues give strong fairness guarantees. Trade-off: higher latency (seconds vs milliseconds) and two-transaction flow per order.
 
-| Pro | Con |
-|-----|-----|
-| Eliminates mempool MEV | Higher latency (seconds vs milliseconds) |
-| CLOB with resting orders = persistent liquidity | Two-transaction flow per order (UX friction) |
-| Structural priority queues = strong fairness guarantees | Requires commitment deposit lockup |
-| Shuffle eliminates time-advantage | Shuffle seed from close_slot is not as robust as Bulk.Trade's consensus-derived timestamp |
-| ALO orders guarantee maker fee | CLOB state management more complex than batch auction |
+**Rejected:** Continuous CLOB (Serum/OpenBook model) — no MEV protection. Batch auction with uniform clearing — discourages maker liquidity and pro-rata encourages over-committing.
 
-**Alternatives considered**: Continuous CLOB (Serum/OpenBook model) — rejected because it offers no MEV protection. Batch auction with uniform clearing — rejected because it discourages maker liquidity and pro-rata encourages over-committing.
+### 2. Hedge-Preserving Safety Stack vs Global Haircut
 
-### 2. Bulk.Trade Safety Stack vs Global Haircut
+**Chosen: Liquidation Optimizer → Insurance → ADL.** ADL targets only profitable counterparties, not all users. Hedge-preserving optimizer prevents cascade. No haircut on deposits/principal. Trade-off: more complex implementation; ADL is controversial UX.
 
-**Chosen: Liquidation Optimizer → Insurance → ADL**
-
-| Pro | Con |
-|-----|-----|
-| ADL targets only profitable counterparties, not all users | ADL is controversial UX — profitable traders get deleveraged |
-| Hedge-preserving optimizer prevents cascade | More complex implementation than global haircut |
-| No haircut on deposits/principal — users keep what they deposited | ADL could be exploited if scoring formula is gamed |
-| Aligned with Bulk.Trade's proven design | ADL event is still a negative signal for the protocol |
-
-**Alternative considered**: O(1) global haircut (equity_scale/warming_scale). Rejected because haircutting all users including those with no positions is less targeted than ADL which only affects profitable counterparties on the opposite side.
+**Rejected:** O(1) global haircut — haircutting all users including those with no positions is less targeted than ADL which only affects profitable counterparties on the opposite side.
 
 ### 3. Three-Program Separation vs Monolith
 
-**Chosen: Three programs (Core + Matching + Oracle)**
-
-| Pro | Con |
-|-----|-----|
-| Independent upgradeability | More complex deployment |
-| Matching Engine can be audited independently | CPI overhead between programs |
-| Oracle can be replaced without touching Core | More program IDs to manage |
-| Clear security boundaries | |
+**Chosen: Three programs (Core + Matching + Oracle).** Independent upgradeability. Matching Engine can be audited independently. Oracle can be replaced without touching Core. Clear security boundaries. Trade-off: more complex deployment, CPI overhead.
 
 ### 4. SOL-Only vs Multi-Token Collateral
 
-**Chosen: SOL-only**
-
-| Pro | Con |
-|-----|-----|
-| Single vault, no multi-token accounting | Limits user base (no USDC deposits) |
-| No collateral oracle needed (SOL is native) | Harder to attract stablecoin-heavy traders |
-| Simpler liquidation (no asset conversion) | |
-| Lower attack surface | |
+**Chosen: SOL-only.** Single vault, no multi-token accounting. No collateral oracle needed. Simpler liquidation. Lower attack surface. Trade-off: limits user base (no USDC deposits).
 
 ### 5. Full Slashing vs Partial Penalty
 
-**Chosen: Full slashing of commitment deposit for non-reveal**
-
-| Pro | Con |
-|-----|-----|
-| Strong disincentive against manipulation | Harsh on honest users who miss deadline |
-| Revenue for insurance fund | May deter participation |
-
-**Mitigation**: Wallet auto-reveals. Grace period / first-offense warning in UX layer.
+**Chosen: Full slashing of commitment deposit for non-reveal.** Strong disincentive against manipulation. Revenue for insurance fund. Trade-off: harsh on honest users who miss deadline. Mitigated by wallet auto-reveal and relayer.
 
 ### 6. Static Margin Tiers vs Lambda Surfaces
 
-**Chosen: Static IMR/MMR tiers for MVP, lambda surfaces post-MVP**
-
-| Pro | Con |
-|-----|-----|
-| Simple, fast to implement | Less capital-efficient than correlation-adjusted |
-| Easy to reason about and audit | Doesn't account for cross-asset correlation |
-| Governance can adjust per instrument | No regime-adaptive margin |
-
-**Post-MVP upgrade**: Add correlation-adjusted effective notional (`N_eff` with `rho_ij`), then lambda surfaces with regime detection.
+**Chosen: Static IMR/MMR tiers for MVP.** Simple, fast to implement, easy to audit, governance can adjust per instrument. Trade-off: less capital-efficient than correlation-adjusted. Lambda surfaces are a post-MVP upgrade.
 
 ## Non-Functional Requirements
 
 ### Performance
 
 | Metric | Target |
-|--------|--------|
+|---|---|
 | Batch clearing compute | ≤ 300k CU for up to 64 orders (shuffle + priority + CLOB match) |
 | CLOB matching per order | O(book_depth) for aggressive, O(1) for passive placement |
 | Fisher-Yates shuffle | O(n) for n revealed orders |
@@ -759,48 +806,48 @@ Margin breach detected
 
 ### Security
 
-- **Kani formal verification**: All safety-critical invariants must be proven before mainnet:
-   - **Conservation**: `sum(equity) + vault_balance + insurance_balance = total_deposits + sum(pnl)` invariant preserved across all operations
-   - **No over-withdrawal**: Withdraw amount ≤ free_collateral proven for all paths
-   - **Liquidation progress**: Every liquidation call reduces total underwater exposure
-   - **Commitment integrity**: Revealed orders always match stored hash commitments
-   - **Funding conservation**: Long payments + short payments = 0 (zero-sum)
-   - **Batch atomicity**: Either all fills in a batch execute or none do
-   - **Self-trade prevention**: No account can match against itself
-   - **Book integrity**: Order quantities never exceed deposited collateral
+- **Kani formal verification:** All safety-critical invariants must be proven before mainnet:
+   - **Conservation:** `sum(equity) + vault_balance + insurance_balance = total_deposits + sum(pnl)` invariant preserved across all operations
+   - **No over-withdrawal:** Withdraw amount ≤ free_collateral proven for all paths
+   - **Liquidation progress:** Every liquidation call reduces total underwater exposure
+   - **Commitment integrity:** Revealed orders always match stored hash commitments
+   - **Funding conservation:** Long payments + short payments = 0 (zero-sum)
+   - **Batch atomicity:** Either all fills in a batch execute or none do
+   - **Self-trade prevention:** No account can match against itself
+   - **Book integrity:** Order quantities never exceed deposited collateral
 
-- **PDA authority isolation**: Core Program's vault PDA is the only key authorized to move SOL from portfolios.
+- **PDA authority isolation:** Core Program's vault PDA is the only key authorized to move SOL from portfolios.
 
-- **Checked arithmetic**: All math uses checked/saturating operations. No `unwrap()` on arithmetic.
+- **Checked arithmetic:** All math uses checked/saturating operations. No `unwrap()` on arithmetic.
 
-- **Rounding direction**: All fee calculations round in protocol's favor. Withdrawals round down. Funding payments round conservatively.
+- **Rounding direction:** All fee calculations round in protocol's favor. Withdrawals round down. Funding payments round conservatively.
 
-- **Emergency pause**: Governance can pause trading, withdrawals, liquidations, and funding independently.
+- **Emergency pause:** Governance can pause trading, withdrawals, liquidations, and funding independently.
 
 ### Scalability
 
-- **Dynamic batch sizing**: Batches grow with demand. Low activity → small batches, fast clearing.
-- **Resting order capacity**: Book accounts pre-allocated for MAX_LEVELS price levels. Configurable per instrument.
-- **Parallel execution**: Portfolios for different users touch different accounts → Solana runtime can parallelize across users.
+- **Dynamic batch sizing:** Batches grow with demand. Low activity → small batches, fast clearing.
+- **Resting order capacity:** Book accounts pre-allocated for MAX_LEVELS price levels. Configurable per instrument.
+- **Parallel execution:** Portfolios for different users touch different accounts → Solana runtime can parallelize across users.
 
 ### Reliability
 
-- **Permissionless keepers**: No single keeper dependency.
-- **Graceful degradation**: If oracle is stale, liquidations are paused but trading continues. If funding is stuck, positions remain but no new funding accrues.
-- **Persistent book**: Order book survives across batches. If a batch fails to clear, the book state is unchanged.
+- **Permissionless keepers:** No single keeper dependency.
+- **Graceful degradation:** If oracle is stale, liquidations are paused but trading continues. If funding is stuck, positions remain but no new funding accrues.
+- **Persistent book:** Order book survives across batches. If a batch fails to clear, the book state is unchanged.
 
 ### UX / Accessibility
 
-- **Wallet-native**: Users only need SOL and a Solana wallet.
-- **Auto-reveal**: Wallet handles the reveal transaction automatically. Two-transaction flow feels like one.
-- **Clear error messages**: Program returns human-readable error codes.
-- **Reduce-only by default on liquidation**: Users can also use reduce-only modifier manually.
+- **Wallet-native:** Users only need SOL and a Solana wallet.
+- **Auto-reveal:** Wallet handles the reveal transaction automatically. Two-transaction flow feels like one.
+- **Clear error messages:** Program returns human-readable error codes.
+- **Reduce-only by default on liquidation:** Users can also use reduce-only modifier manually.
 
 ## Insurance Fund
 
 Insurance fund covers bad debt from liquidations. **Fee-accrued only** — the fund starts at zero and grows organically from taker fees and slashed commitment deposits. No team pre-funding required.
 
-**Risk**: During initial bootstrapping with low fee volume, the fund may be insufficient for large bad debt events. Mitigated by conservative initial IMR/MMR parameters and ADL as the last resort.
+**Risk:** During initial bootstrapping with low fee volume, the fund may be insufficient for large bad debt events. Mitigated by conservative initial IMR/MMR parameters and ADL as the last resort.
 
 ## Position Limits
 
@@ -818,7 +865,7 @@ Governance can adjust `liquidity_factor` and `leverage_cap` per instrument. Circ
 ## Fee Distribution
 
 | Destination | Share | Purpose |
-|-------------|-------|---------|
+|---|---|---|
 | Insurance Fund | 60% | Cover bad debt from liquidations |
 | Protocol Treasury | 40% | Team operations, infrastructure, development |
 
@@ -837,7 +884,7 @@ Maker fees are typically negative (rebate) to incentivize liquidity provision. C
 - Funding parameters (interest_rate, deviation_cap, funding_cap)
 - ADL parameters (score_weight_w)
 
-**Pre-mainnet upgrade**: Migrate to Squads multisig (3-of-5 or similar) for production governance.
+**Pre-mainnet upgrade:** Migrate to Squads multisig (3-of-5 or similar) for production governance.
 
 ### Emergency Pause
 
@@ -863,7 +910,7 @@ deposit = base_deposit * volatility_multiplier[instrument_id]
 ```
 
 | Volatility Tier | Multiplier | Example Deposit (base = 0.01 SOL) |
-|-----------------|------------|-----------------------------------|
+|---|---|---|
 | Low (stable assets) | 1.0x | 0.010 SOL |
 | Medium (BTC, ETH) | 3.0x | 0.030 SOL |
 | High (alt L1s) | 5.0x | 0.050 SOL |
@@ -881,14 +928,14 @@ The two-transaction flow is **wallet-managed**:
 
 The user experiences this as **one action** with a brief loading state. The wallet abstracts the two-step protocol.
 
-**Cancel flow**: User can submit a `Cancel` commitment for a resting order. This is also commit-reveal: the cancel intent is hashed, then revealed. Cancels always execute first in the priority queue.
+**Cancel flow:** User can submit a `Cancel` commitment for a resting order. This is also commit-reveal: the cancel intent is hashed, then revealed. Cancels always execute first in the priority queue.
 
-**Direct cancel for resting orders**: Users can also cancel resting orders directly (outside batch) via `CancelRestingOrder` instruction. This bypasses commit-reveal for speed but is only for orders already on the book — no MEV concern since the order is already visible.
+**Direct cancel for resting orders:** Users can also cancel resting orders directly (outside batch) via `CancelRestingOrder` instruction. This bypasses commit-reveal for speed but is only for orders already on the book — no MEV concern since the order is already visible.
 
 ## Batch Account Sizing
 
 | Parameter | Value | Rationale |
-|-----------|-------|-----------|
+|---|---|---|
 | Max commitments per batch | **64** | Single-CPI clear within 1.4M CU budget. Upgrade path: multi-step clear. |
 | Max revealed orders per batch | 64 | Matches commitments |
 | Max positions per portfolio | 32 | Covers all listed instruments |
@@ -898,14 +945,12 @@ The user experiences this as **one action** with a brief loading state. The wall
 | Portfolio account size | ~8 KB | Positions + funding checkpoints + metadata |
 | Order book account size | ~32 KB | Levels + resting orders + metadata |
 
-**Upgrade path**: Multi-step clearing for >64 orders per batch. Dynamic book resizing post-MVP.
-
-**Benchmarking plan**: Test on devnet with realistic load to validate CU limits and account sizes.
+**Upgrade path:** Multi-step clearing for >64 orders per batch. Dynamic book resizing post-MVP.
 
 ## Batch Edge Cases
 
 | Scenario | Behavior |
-|----------|----------|
+|---|---|
 | **No crossing orders** (all bids < all asks) | All revealed orders that are GTC/ALO rest on the book. IOC/Market orders cancelled unfilled. Batch settles with 0 fills but book has new resting liquidity. Mark price from depth-weighted mid or carry forward. |
 | **All orders on one side** | Same as no crossing — new resting orders on that side, no fills. |
 | **Zero commitments** | Batch stays in Committing until T_max. Closes empty → Settled. Next batch opens. Book unchanged. |
@@ -917,34 +962,32 @@ The user experiences this as **one action** with a brief loading state. The wall
 | **Self-trade (same account on both sides)** | Resting order is cancelled instead of matching. New order may rest or be cancelled per type. |
 | **Risk limit breach during fill** | Remainder of the order is cancelled (`cancelledRiskLimit`). Filled portion stands. |
 
-## Self-Trade Prevention (Aligned with Bulk.Trade)
+## Self-Trade Prevention
 
 When an incoming order would match against a resting order from the **same account** (including sub-accounts if implemented), the resting order is **cancelled** rather than matched. This protects market makers operating on both sides of the book from wash trades.
 
-## Open Questions & Next Steps
-
-Resolved:
+## Resolved Design Decisions
 
 | # | Question | Answer |
-|---|----------|--------|
+|---|---|---|
 | 1 | Insurance fund capitalization | **Fee-accrued only** — starts at zero, grows from taker fees + slashes |
 | 2 | Order size limits | **Dynamic, risk-based** — capped by book depth × factor and insurance fund × leverage_cap |
 | 3 | Auto-reveal UX | **Wallet-managed** — single user intent, wallet handles both txns automatically |
 | 4 | Batch account sizing | **64 orders/batch** for MVP (single-CPI clear). Upgrade path: multi-step clear. |
-| 5 | Fair ordering model | **Deterministic shuffle + structural priority queues + price-time CLOB** — aligned with Bulk.Trade Layers 2-4. No FIFO. |
+| 5 | Fair ordering model | **Deterministic shuffle + structural priority queues + price-time CLOB.** No FIFO. |
 | 6 | Fill pricing | **At the resting (maker) order's limit price** — standard CLOB convention. Taker pays maker's price. |
-| 7 | Shuffle seed | **close_slot** from `close_committing` — unpredictable during commit phase. Less robust than Bulk.Trade's consensus-derived timestamp but sufficient for on-chain. |
-| 8 | Mark price | **Simplified composite** — depth-weighted book mid + oracle fallback when book stale. Full 3-component model post-MVP. |
+| 7 | Shuffle seed | **close_slot** from `close_committing` — unpredictable during commit phase. |
+| 8 | Mark price | **Depth-weighted book mid + oracle fallback** when book is stale. |
 | 9 | Bad debt beyond insurance fund | **ADL** — deleverage profitable counterparties, ranked by `max(1,PnL)^w * leverage^(1-w)`, allocated pro-rata. No global haircut. |
 | 10 | Funding rate accrual | **Per-batch** during settle_batch with depth-weighted premium SMA. |
 | 11 | Fallback oracle activation | **Auto + manual** — automatically activates on Pyth staleness. Admin can override. |
 | 12 | Emergency pause | **PauseFlags bitmask** — trading, withdrawals, liquidations, funding independently pausable. Cancel operations available during pause. |
 | 13 | No-fill batches | **Settle, GTC orders rest on book, mark price from book mid or carry forward.** |
-| 14 | System relationship | **Fully independent** — mgk perps-core has own portfolios, vaults, risk. Separate from Router/Slab. |
+| 14 | System relationship | **Fully independent** — mgk perps-core has own portfolios, vaults, risk. |
 | 15 | Margin model | **Static IMR/MMR tiers for MVP.** Correlation-adjusted notional + lambda surfaces post-MVP. |
-| 16 | Safety stack | **Liquidation optimizer → Insurance → ADL** — aligned with Bulk.Trade. |
-| 17 | Order types | **GTC, IOC, ALO/post-only, Market, Reduce-Only, Cancel, Cancel-All** — aligned with Bulk.Trade. |
-| 18 | Self-trade prevention | **Cancel resting order instead of matching** — aligned with Bulk.Trade. |
+| 16 | Safety stack | **Liquidation optimizer → Insurance → ADL.** |
+| 17 | Order types | **GTC, IOC, ALO/post-only, Market, Reduce-Only, Cancel, Cancel-All.** |
+| 18 | Self-trade prevention | **Cancel resting order instead of matching.** |
 | 19 | Maker pricing | **Maker earns rebate (negative fee)** — incentivizes liquidity provision. |
 | 20 | Direct cancel | **CancelRestingOrder** instruction for immediate cancellation outside batch. No commit-reveal needed. |
 

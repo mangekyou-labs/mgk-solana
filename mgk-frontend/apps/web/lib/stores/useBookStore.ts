@@ -16,6 +16,10 @@ export interface BookPollParams {
   programId: PublicKey;
   instrumentId: number;
   intervalMs: number;
+  /** Optional override for the book account address. When set, skips PDA
+   *  derivation and fetches this address directly. Used on devnet where the
+   *  book is a matcher-owned keypair (no InitializeBook instruction yet). */
+  bookAddress?: PublicKey | null;
 }
 
 interface BookStore {
@@ -30,15 +34,6 @@ interface BookStore {
   refresh: () => Promise<void>;
 }
 
-// Poll state lives at module scope (not in the store) so that the
-// `setInterval` handle and the active poll params don't get serialized
-// by Zustand devtools / persisted to localStorage. Mirrors the pattern
-// established by usePortfolioStore (T2.2) and useBatchStore (T2.4) —
-// a "small duplicate beats a wrong abstraction": book polling is
-// single-call (derive Book PDA → fetch → decode), batch polling is
-// two-call (Registry → Batch), and book is per-instrument while batch
-// is global, so we keep three near-identical stores rather than
-// introducing a shared factory.
 let pollHandle: ReturnType<typeof setInterval> | null = null;
 let currentParams: BookPollParams | null = null;
 
@@ -73,10 +68,10 @@ export const useBookStore = create<BookStore>((set, get) => ({
     if (!currentParams) return;
     set({ loading: true, error: null });
     try {
-      const { connection, programId, instrumentId } = currentParams;
+      const { connection, programId, instrumentId, bookAddress } = currentParams;
 
-      const [bookPda] = sdk.deriveBookPda(instrumentId, programId);
-      const accounts = await connection.getMultipleAccountsInfo([bookPda]);
+      const bookPk = bookAddress ?? sdk.deriveBookPda(instrumentId, programId)[0];
+      const accounts = await connection.getMultipleAccountsInfo([bookPk]);
       const acc = accounts[0] ?? null;
       if (!acc) {
         set({
@@ -104,13 +99,6 @@ export const useBookStore = create<BookStore>((set, get) => ({
   },
 }));
 
-/**
- * React hook that auto-starts book polling on mount and stops on unmount.
- * Book state is per-instrument: switching `instrumentId` replaces the
- * active poll (the previous interval is cleared in `startPolling`).
- * Returns the top-N levels (filtered to populated, sorted bid DESC /
- * ask ASC, sliced to `depth`).
- */
 export function useBookTopN(
   instrumentId: number,
   depth = 20,
@@ -133,6 +121,7 @@ export function useBookTopN(
       programId: config.matcherProgramId,
       instrumentId,
       intervalMs,
+      bookAddress: config.bookAddress,
     });
     return () => {
       stopPolling();

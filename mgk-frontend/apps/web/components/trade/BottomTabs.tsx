@@ -1,11 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { Balances } from '@/components/portfolio/Balances';
 import { Positions } from '@/components/portfolio/Positions';
 import { usePortfolioPolling } from '@/lib/stores/usePortfolioStore';
 import { OpenOrders } from './OpenOrders';
+import { TradeHistory } from './history/TradeHistory';
+import { OrderHistory } from './history/OrderHistory';
+import { FundingHistory } from './history/FundingHistory';
+import { PositionHistory } from './history/PositionHistory';
+import { AccountHistory } from './history/AccountHistory';
 
 export type TabId =
   | 'positions'
@@ -23,9 +28,9 @@ interface Tab {
   count?: number;
 }
 
-const TABS: Tab[] = [
-  { id: 'positions', label: 'Positions', count: 0 },
-  { id: 'open-orders', label: 'Open Orders', count: 0 },
+const TABS: Omit<Tab, 'count'>[] = [
+  { id: 'positions', label: 'Positions' },
+  { id: 'open-orders', label: 'Open Orders' },
   { id: 'balances', label: 'Balances' },
   { id: 'order-history', label: 'Order History' },
   { id: 'trade-history', label: 'Trade History' },
@@ -33,17 +38,6 @@ const TABS: Tab[] = [
   { id: 'position-history', label: 'Position History' },
   { id: 'account-history', label: 'Account History' },
 ];
-
-const EMPTY_MESSAGES: Record<TabId, string> = {
-  positions: 'You have no positions yet.',
-  'open-orders': 'You have no open orders.',
-  balances: 'No balances to display.',
-  'order-history': 'No order history.',
-  'trade-history': 'No trade history.',
-  'funding-history': 'No funding history.',
-  'position-history': 'No position history.',
-  'account-history': 'No account history.',
-};
 
 export interface BottomTabsProps {
   /** instrument id used for OpenOrders (matcher Book PDA). */
@@ -53,10 +47,24 @@ export interface BottomTabsProps {
 
 export function BottomTabs({ instrumentId = 0, className }: BottomTabsProps) {
   const [activeTab, setActiveTab] = useState<TabId>('positions');
+  const [openOrderCount, setOpenOrderCount] = useState<number | null>(null);
   const portfolio = usePortfolioPolling(3000);
+  const tabs = useMemo<Tab[]>(
+    () =>
+      TABS.map((tab) => {
+        if (tab.id === 'positions') {
+          return { ...tab, count: portfolio.data?.positionsLen ?? 0 };
+        }
+        if (tab.id === 'open-orders' && openOrderCount !== null) {
+          return { ...tab, count: openOrderCount };
+        }
+        return tab;
+      }),
+    [openOrderCount, portfolio.data?.positionsLen],
+  );
 
-  const firstRow = TABS.slice(0, 5);
-  const secondRow = TABS.slice(5);
+  const firstRow = tabs.slice(0, 5);
+  const secondRow = tabs.slice(5);
 
   return (
     <div
@@ -97,6 +105,7 @@ export function BottomTabs({ instrumentId = 0, className }: BottomTabsProps) {
           instrumentId={instrumentId}
           portfolioData={portfolio.data}
           portfolioLoading={portfolio.loading}
+          onOpenOrderCountChange={setOpenOrderCount}
         />
       </div>
     </div>
@@ -108,11 +117,13 @@ function TabContent({
   instrumentId,
   portfolioData,
   portfolioLoading,
+  onOpenOrderCountChange,
 }: {
   activeTab: TabId;
   instrumentId: number;
   portfolioData: Parameters<typeof Positions>[0]['data'];
   portfolioLoading: boolean;
+  onOpenOrderCountChange: (count: number) => void;
 }) {
   switch (activeTab) {
     case 'positions':
@@ -130,13 +141,40 @@ function TabContent({
     case 'open-orders':
       return (
         <div className="p-2" data-testid="bottom-tabs-open-orders">
-          <OpenOrders instrumentId={instrumentId} />
+          <OpenOrders
+            instrumentId={instrumentId}
+            onCountChange={onOpenOrderCountChange}
+          />
         </div>
       );
-    default:
+    case 'trade-history':
       return (
-        <div className="px-4 py-6 text-center" data-testid="bottom-tabs-empty">
-          {EMPTY_MESSAGES[activeTab]}
+        <div className="p-2" data-testid="bottom-tabs-trade-history">
+          <TradeHistory instrumentId={instrumentId} />
+        </div>
+      );
+    case 'order-history':
+      return (
+        <div className="p-2" data-testid="bottom-tabs-order-history">
+          <OrderHistory instrumentId={instrumentId} />
+        </div>
+      );
+    case 'funding-history':
+      return (
+        <div className="p-2" data-testid="bottom-tabs-funding-history">
+          <FundingHistory />
+        </div>
+      );
+    case 'position-history':
+      return (
+        <div className="p-2" data-testid="bottom-tabs-position-history">
+          <PositionHistory />
+        </div>
+      );
+    case 'account-history':
+      return (
+        <div className="p-2" data-testid="bottom-tabs-account-history">
+          <AccountHistory />
         </div>
       );
   }

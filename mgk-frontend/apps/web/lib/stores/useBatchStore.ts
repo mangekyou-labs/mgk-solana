@@ -7,6 +7,7 @@ import * as sdk from '@mgk/sdk';
 import { create } from 'zustand';
 
 import { config } from '@/lib/config';
+import { resolveBatchAddress, resolveRegistryAddress } from '@/lib/onchainAccounts';
 
 type BatchState = sdk.state.BatchState;
 type RegistryState = sdk.state.RegistryState;
@@ -14,6 +15,9 @@ type RegistryState = sdk.state.RegistryState;
 export interface BatchPollParams {
   connection: Connection;
   programId: PublicKey;
+  registryAddress?: PublicKey | null;
+  batchAddress?: PublicKey | null;
+  indexerUrl?: string;
   intervalMs: number;
 }
 
@@ -40,6 +44,8 @@ interface BatchStore {
 // introducing a shared factory.
 let pollHandle: ReturnType<typeof setInterval> | null = null;
 let currentParams: BatchPollParams | null = null;
+let hookConsumerCount = 0;
+let hookParamsKey: string | null = null;
 
 export const useBatchStore = create<BatchStore>((set, get) => ({
   data: null,
@@ -73,9 +79,9 @@ export const useBatchStore = create<BatchStore>((set, get) => ({
     if (!currentParams) return;
     set({ loading: true, error: null });
     try {
-      const { connection, programId } = currentParams;
+      const { connection, programId, registryAddress, batchAddress, indexerUrl } = currentParams;
 
-      const [registryPda] = sdk.deriveRegistryPda(programId);
+      const registryPda = resolveRegistryAddress(programId, registryAddress ?? null);
       const registryAccounts =
         await connection.getMultipleAccountsInfo([registryPda]);
       const registryAcc = registryAccounts[0] ?? null;
@@ -106,17 +112,20 @@ export const useBatchStore = create<BatchStore>((set, get) => ({
         return;
       }
 
-      const [batchPda] = sdk.deriveBatchPda(
-        registry.batchIdCounter,
+      const activeBatchId = registry.batchIdCounter - 1n;
+      const batchPda = await resolveBatchAddress({
+        batchId: activeBatchId,
         programId,
-      );
+        batchAddress: batchAddress ?? null,
+        indexerUrl,
+      });
       const batchAccounts = await connection.getMultipleAccountsInfo([batchPda]);
       const batchAcc = batchAccounts[0] ?? null;
       if (!batchAcc) {
         set({
           data: null,
           registry,
-          currentBatchId: registry.batchIdCounter,
+          currentBatchId: activeBatchId,
           loading: false,
           error: null,
           lastFetchedAt: Date.now(),
@@ -128,7 +137,7 @@ export const useBatchStore = create<BatchStore>((set, get) => ({
       set({
         data,
         registry,
-        currentBatchId: registry.batchIdCounter,
+        currentBatchId: activeBatchId,
         loading: false,
         error: null,
         lastFetchedAt: Date.now(),
@@ -163,13 +172,35 @@ export function useBatchPolling(intervalMs = 3000): {
   const stopPolling = useBatchStore((s) => s.stopPolling);
 
   useEffect(() => {
-    startPolling({
+    const params = {
       connection,
       programId: config.coreProgramId,
+      registryAddress: config.registryAddress,
+      batchAddress: config.batchAddress,
+      indexerUrl: config.indexerUrl,
       intervalMs,
-    });
+    };
+    const nextParamsKey = [
+      connection.rpcEndpoint,
+      config.coreProgramId.toBase58(),
+      config.registryAddress?.toBase58() ?? '',
+      config.batchAddress?.toBase58() ?? '',
+      config.indexerUrl,
+      intervalMs,
+    ].join('|');
+
+    hookConsumerCount += 1;
+    if (hookConsumerCount === 1 || hookParamsKey !== nextParamsKey) {
+      hookParamsKey = nextParamsKey;
+      startPolling(params);
+    }
+
     return () => {
-      stopPolling();
+      hookConsumerCount = Math.max(0, hookConsumerCount - 1);
+      if (hookConsumerCount === 0) {
+        hookParamsKey = null;
+        stopPolling();
+      }
     };
   }, [connection, intervalMs, startPolling, stopPolling]);
 

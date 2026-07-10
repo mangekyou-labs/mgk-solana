@@ -1,5 +1,5 @@
 use crate::state::{
-    Commitment, CommitmentStatus, Instrument, Portfolio, MAX_COMMITMENTS, Batch, BatchStatus,
+    Batch, BatchStatus, Commitment, CommitmentStatus, Instrument, Portfolio,
 };
 use percolator_common::PercolatorError;
 use pinocchio::{
@@ -12,6 +12,10 @@ use pinocchio::{
     ProgramResult,
 };
 
+/// Keep the Core -> Matcher CPI payload inside the SBF stack-frame limit.
+/// Larger batches can be cleared in slices by the keeper.
+const MAX_CPI_ORDERS: usize = 32;
+
 /// Bytes per order in the CPI payload (M6 6g).
 /// side(1) + price(8) + qty(8) + user(32) + order_type(1) + instrument_id(2) + reduce_only(1) = 53
 const BYTES_PER_ORDER: usize = 53;
@@ -19,14 +23,6 @@ const BYTES_PER_ORDER: usize = 53;
 const HEADER_BYTES: usize = 12;
 /// Bytes per user cap (M7 7.6, D2): user(32) + max_notional(16) = 48.
 const BYTES_PER_CAP: usize = 48;
-/// Maximum caps per batch. Matches the matcher's `MAX_ORDERS` (64) — for
-/// 64 orders, there can be at most 64 unique users. If a batch has more
-/// than 64 unique users, `process_clear_batch` returns an error.
-const MAX_CAPS: usize = 64;
-/// Maximum CPI payload size (M7 7.6): header + max_caps*cap_bytes + max_commitments*order_bytes.
-const CPI_DATA_SIZE: usize =
-    HEADER_BYTES + MAX_CAPS * BYTES_PER_CAP + MAX_COMMITMENTS * BYTES_PER_ORDER;
-
 /// Matcher `ClearAndMatch` discriminator (M6 6i.2).
 pub const MATCHER_CLEAR_AND_MATCH: u8 = 3;
 
@@ -56,10 +52,9 @@ pub(crate) fn compute_user_cap(free_collateral: i128, max_leverage: u16) -> u128
 /// Cap formula: `cap = free_collateral * max_leverage` (u128). If the user
 /// has no portfolio in this batch, or `free_collateral < 0`, `cap = 0` —
 /// the matcher cancels all fills for that user (defensive: prevents
-/// unfunded takers from filling). Caps are stored in a stack-allocated
-/// array of at most `MAX_CAPS = 64` entries (matching matcher's
-/// `MAX_ORDERS`); a batch with more than 64 unique users returns an
-/// error.
+/// unfunded takers from filling). A single ClearBatch call is bounded to
+/// `MAX_CPI_ORDERS` revealed commitments so its CPI payload remains below
+/// the SBF stack-frame limit.
 #[allow(clippy::too_many_arguments)]
 pub fn process_clear_batch(
     _program_id: &Pubkey,
@@ -79,9 +74,21 @@ pub fn process_clear_batch(
         return Err(PercolatorError::InvalidInstruction.into());
     }
 
-    let total_commitments = batch.total_commitments as usize;
-    if total_commitments == 0 {
+    let revealed_count = commitment_accounts
+        .iter()
+        .filter(|account| {
+            let commitment = unsafe {
+                &*(account.borrow_data_unchecked().as_ptr() as *const Commitment)
+            };
+            commitment.status == CommitmentStatus::Revealed
+        })
+        .count();
+    if revealed_count == 0 {
         msg!("Error: No commitments to clear");
+        return Err(PercolatorError::InvalidInstruction.into());
+    }
+    if revealed_count > MAX_CPI_ORDERS {
+        msg!("Error: Too many commitments for one ClearBatch call");
         return Err(PercolatorError::InvalidInstruction.into());
     }
 
@@ -90,171 +97,133 @@ pub fn process_clear_batch(
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // ===========================================================
-    // M7 7.6 (D2): build per-user cap table.
-    // ===========================================================
+    let mut cpi_instruction_data =
+        [0u8; 1 + HEADER_BYTES + MAX_CPI_ORDERS * (BYTES_PER_CAP + BYTES_PER_ORDER)];
+    cpi_instruction_data[0] = MATCHER_CLEAR_AND_MATCH;
+    let cpi_data = &mut cpi_instruction_data[1..];
+    cpi_data[0..8].copy_from_slice(&batch.close_slot.to_le_bytes());
+    cpi_data[8..10].copy_from_slice(&(revealed_count as u16).to_le_bytes());
 
-    // Step 1: collect unique users from revealed commitments.
-    let mut unique_users: [Pubkey; MAX_CAPS] = [Pubkey::default(); MAX_CAPS];
-    let mut unique_user_count: usize = 0;
-    for commitment_account in commitment_accounts.iter().take(total_commitments) {
+    let mut cap_count = 0usize;
+    for commitment_account in commitment_accounts {
         let commitment = unsafe {
             &*(commitment_account.borrow_data_unchecked().as_ptr() as *const Commitment)
         };
         if commitment.status != CommitmentStatus::Revealed {
             continue;
         }
-        let user = commitment.revealed.user;
-        let found = unique_users[..unique_user_count].contains(&user);
-        if !found {
-            if unique_user_count >= MAX_CAPS {
-                msg!("Error: Too many unique users in batch (max 64)");
-                return Err(PercolatorError::InvalidInstruction.into());
-            }
-            unique_users[unique_user_count] = user;
-            unique_user_count += 1;
-        }
-    }
 
-    // Step 2: for each unique user, compute max_leverage across their
-    // instruments. We use the largest max_leverage the user is exposed to
-    // in this batch — this preserves the most permissive cap and avoids
-    // suppressing fills on lower-leverage instruments.
-    let mut user_max_leverage: [u16; MAX_CAPS] = [1u16; MAX_CAPS];
-    for (i, user) in unique_users[..unique_user_count].iter().enumerate() {
-        let mut max_lev: u16 = 1; // baseline = no leverage
-        for commitment_account in commitment_accounts.iter().take(total_commitments) {
-            let commitment = unsafe {
-                &*(commitment_account.borrow_data_unchecked().as_ptr() as *const Commitment)
+        let user = commitment.revealed.user;
+        let already_written = (0..cap_count).any(|i| {
+            let start = HEADER_BYTES + i * BYTES_PER_CAP;
+            cpi_data[start..start + 32] == *user.as_ref()
+        });
+        if already_written {
+            continue;
+        }
+        if cap_count >= MAX_CPI_ORDERS {
+            msg!("Error: Too many unique users for one ClearBatch call");
+            return Err(PercolatorError::InvalidInstruction.into());
+        }
+
+        let mut max_leverage: u16 = 1;
+        for other_account in commitment_accounts {
+            let other = unsafe {
+                &*(other_account.borrow_data_unchecked().as_ptr() as *const Commitment)
             };
-            if commitment.status != CommitmentStatus::Revealed {
+            if other.status != CommitmentStatus::Revealed || other.revealed.user != user {
                 continue;
             }
-            if commitment.revealed.user != *user {
-                continue;
-            }
-            let inst_id = commitment.revealed.instrument_id;
             for instrument_account in instrument_accounts {
                 let instrument = unsafe {
                     &*(instrument_account.borrow_data_unchecked().as_ptr() as *const Instrument)
                 };
-                if instrument.instrument_id == inst_id && instrument.max_leverage > max_lev {
-                    max_lev = instrument.max_leverage;
+                if instrument.instrument_id == other.revealed.instrument_id
+                    && instrument.max_leverage > max_leverage
+                {
+                    max_leverage = instrument.max_leverage;
                 }
             }
         }
-        user_max_leverage[i] = max_lev;
-    }
 
-    // Step 3: for each unique user, look up their portfolio and compute cap.
-    // cap = free_collateral * max_leverage. If portfolio missing or
-    // free_collateral < 0, cap = 0 (cancels all fills for that user).
-    let mut caps: [(Pubkey, u128); MAX_CAPS] = [(Pubkey::default(), 0u128); MAX_CAPS];
-    for (i, user) in unique_users[..unique_user_count].iter().enumerate() {
         let mut free_collateral: i128 = 0;
         let mut found_portfolio = false;
         for portfolio_account in portfolio_accounts {
             let portfolio = unsafe {
                 &*(portfolio_account.borrow_data_unchecked().as_ptr() as *const Portfolio)
             };
-            if portfolio.user == *user {
+            if portfolio.user == user {
                 free_collateral = portfolio.free_collateral;
                 found_portfolio = true;
                 break;
             }
         }
 
-        let cap: u128 = if !found_portfolio {
-            0
+        let cap = if found_portfolio {
+            compute_user_cap(free_collateral, max_leverage)
         } else {
-            compute_user_cap(free_collateral, user_max_leverage[i])
+            0
         };
-        caps[i] = (*user, cap);
-    }
-
-    // ===========================================================
-    // Build CPI payload for matcher's ClearAndMatch.
-    // Header: close_slot(8) + num_orders(2) + num_caps(2) = 12
-    // Caps: num_caps * 48 bytes
-    // Orders: num_orders * 53 bytes
-    // ===========================================================
-    let mut cpi_data = [0u8; CPI_DATA_SIZE];
-    cpi_data[0..8].copy_from_slice(&batch.close_slot.to_le_bytes());
-    cpi_data[8..10].copy_from_slice(&(total_commitments as u16).to_le_bytes());
-    cpi_data[10..12].copy_from_slice(&(unique_user_count as u16).to_le_bytes());
-
-    // Write caps section.
-    let mut offset = HEADER_BYTES;
-    for (user, cap) in caps[..unique_user_count].iter() {
+        let offset = HEADER_BYTES + cap_count * BYTES_PER_CAP;
         cpi_data[offset..offset + 32].copy_from_slice(user.as_ref());
         cpi_data[offset + 32..offset + 48].copy_from_slice(&cap.to_le_bytes());
-        offset += BYTES_PER_CAP;
+        cap_count += 1;
     }
+    cpi_data[10..12].copy_from_slice(&(cap_count as u16).to_le_bytes());
 
-    // Write orders section.
-    for commitment_account in commitment_accounts.iter().take(total_commitments) {
+    let mut offset = HEADER_BYTES + cap_count * BYTES_PER_CAP;
+    for commitment_account in commitment_accounts {
         let commitment = unsafe {
             &*(commitment_account.borrow_data_unchecked().as_ptr() as *const Commitment)
         };
-
         if commitment.status != CommitmentStatus::Revealed {
-            msg!("Warning: Commitment not revealed, skipping");
             continue;
         }
 
         let r = &commitment.revealed;
-        let side = r.side as u8;
-        let price = r.price;
-        let qty = r.qty;
-        let order_type = r.order_type as u8;
-        let instrument_id = r.instrument_id;
-        let reduce_only = r.reduce_only as u8;
-
-        cpi_data[offset] = side;
-        cpi_data[offset + 1..offset + 9].copy_from_slice(&price.to_le_bytes());
-        cpi_data[offset + 9..offset + 17].copy_from_slice(&qty.to_le_bytes());
+        cpi_data[offset] = r.side as u8;
+        cpi_data[offset + 1..offset + 9].copy_from_slice(&r.price.to_le_bytes());
+        cpi_data[offset + 9..offset + 17].copy_from_slice(&r.qty.to_le_bytes());
         cpi_data[offset + 17..offset + 49].copy_from_slice(r.user.as_ref());
-        cpi_data[offset + 49] = order_type;
-        cpi_data[offset + 50..offset + 52].copy_from_slice(&instrument_id.to_le_bytes());
-        cpi_data[offset + 52] = reduce_only;
+        cpi_data[offset + 49] = r.order_type as u8;
+        cpi_data[offset + 50..offset + 52].copy_from_slice(&r.instrument_id.to_le_bytes());
+        cpi_data[offset + 52] = r.reduce_only as u8;
         offset += BYTES_PER_ORDER;
     }
 
-    // CPI to matcher's ClearAndMatch (discriminator 3 prepended).
-    let mut cpi_instruction_data = [0u8; CPI_DATA_SIZE + 1];
-    cpi_instruction_data[0] = MATCHER_CLEAR_AND_MATCH;
-    cpi_instruction_data[1..1 + offset].copy_from_slice(&cpi_data[..offset]);
+    {
+        let cpi_instruction_data = &cpi_instruction_data[..1 + offset];
+        let cpi_instruction = Instruction {
+            program_id: matcher_program.key(),
+            accounts: &[
+                AccountMeta {
+                    pubkey: book_account.key(),
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: results_account.key(),
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ],
+            data: cpi_instruction_data,
+        };
 
-    let cpi_instruction = Instruction {
-        program_id: matcher_program.key(),
-        accounts: &[
-            AccountMeta {
-                pubkey: book_account.key(),
-                is_signer: false,
-                is_writable: true,
-            },
-            AccountMeta {
-                pubkey: results_account.key(),
-                is_signer: false,
-                is_writable: true,
-            },
-        ],
-        data: &cpi_instruction_data[..1 + offset],
-    };
+        invoke(
+            &cpi_instruction,
+            &[book_account, results_account, matcher_program],
+        )?;
 
-    invoke(
-        &cpi_instruction,
-        &[book_account, results_account, matcher_program],
-    )?;
+        // Transition to Clearing
+        let batch_mut = unsafe {
+            &mut *(batch_account.borrow_mut_data_unchecked().as_ptr() as *mut Batch)
+        };
+        batch_mut.status = BatchStatus::Clearing;
 
-    // Transition to Clearing
-    let batch_mut = unsafe {
-        &mut *(batch_account.borrow_mut_data_unchecked().as_ptr() as *mut Batch)
-    };
-    batch_mut.status = BatchStatus::Clearing;
-
-    msg!("ClearBatch: CLOB match via matcher complete");
-    Ok(())
+        msg!("ClearBatch: CLOB match via matcher complete");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -269,12 +238,11 @@ mod tests {
         assert_eq!(BYTES_PER_CAP, 48);
         // Per order: 53 bytes (M6 6g).
         assert_eq!(BYTES_PER_ORDER, 53);
-        // Max caps = 64 (matches matcher's MAX_ORDERS).
-        assert_eq!(MAX_CAPS, 64);
-        // Max payload: 12 + 64*48 + 500*53.
+        assert_eq!(MAX_CPI_ORDERS, 32);
+        // Max local payload: discriminator + header + caps + orders.
         assert_eq!(
-            CPI_DATA_SIZE,
-            12 + MAX_CAPS * 48 + MAX_COMMITMENTS * 53
+            1 + HEADER_BYTES + MAX_CPI_ORDERS * (BYTES_PER_CAP + BYTES_PER_ORDER),
+            3245
         );
     }
 

@@ -6,3 +6,6 @@
 [target.bpfel-unknown-none]
 # Use sbpf-linker when building for BPF target
 linker = "sbpf-linker"
+
+# NOTE: Use `cargo sbf` (defined in ~/.cargo/bin/cargo-sbf) instead of `cargo build-sbf`.
+# The wrapper automatically strips .bss sections that the BPF loader rejects.

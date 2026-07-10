@@ -1,0 +1,44 @@
+name: mgk-frontend CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mgk-frontend/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'mgk-frontend/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mgk-frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: mgk-frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -F @mgk/sdk build
+      - run: pnpm -F web typecheck
+      - run: pnpm -F web lint
+      - run: pnpm -F web test
+      - run: pnpm -F web build
+      - name: Run E2E tests
+        run: pnpm -F web e2e
+        env:
+          NEXT_PUBLIC_RPC_URL: ${{ secrets.DEVNET_RPC_URL }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: mgk-frontend/apps/web/playwright-report/
+          retention-days: 7

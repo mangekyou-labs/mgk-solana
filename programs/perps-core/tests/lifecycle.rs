@@ -33,8 +33,8 @@ use solana_sdk::{
 const RESULTS_ACCOUNT_SIZE: usize = 2 + 128 * 49;
 
 /// Program IDs matching the keypairs in `target/deploy/`.
-/// (2026-06-20: perps-core fresh-deployed to CzWqtmcrm... — old DBrCzAMA... closed)
-const CORE_ID: Pubkey = solana_sdk::pubkey!("CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5");
+/// (2026-06-24: perps-core re-deployed to CThnLgZ... —CzWqtmcrm... stale)
+const CORE_ID: Pubkey = solana_sdk::pubkey!("J5fVjwm96cQxcSqUz4QAmRBT75x7aN9NgG4xcnMmcfSv");
 /// (2026-06-16: matcher re-deployed from broken canonical 9o2vTBBh... to AU4EKQAQ...)
 const MATCHER_ID: Pubkey = solana_sdk::pubkey!("AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF");
 

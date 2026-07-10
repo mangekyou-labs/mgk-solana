@@ -1,4 +1,3 @@
-use crate::pda::derive_batch_pda;
 use crate::state::{Batch, BatchStatus, Registry};
 use percolator_common::PercolatorError;
 use pinocchio::{
@@ -7,7 +6,7 @@ use pinocchio::{
 };
 
 pub fn process_close_committing(
-    program_id: &Pubkey,
+    _program_id: &Pubkey,
     batch_account: &AccountInfo,
     registry_account: &AccountInfo,
 ) -> ProgramResult {
@@ -19,12 +18,8 @@ pub fn process_close_committing(
         return Err(PercolatorError::InvalidInstruction.into());
     }
 
-    // Verify batch PDA
-    let (expected_pda, _) = derive_batch_pda(batch.batch_id, program_id);
-    if batch_account.key() != &expected_pda {
-        msg!("Error: Invalid batch PDA");
-        return Err(PercolatorError::InvalidAccountOwner.into());
-    }
+    // Note: On Solana 4.x, batches are keypairs (not PDAs), so we skip the
+    // derive_batch_pda validation that existed here previously.
 
     // Check if we can close: either past deadline OR have enough commitments
     let clock = Clock::get()?;

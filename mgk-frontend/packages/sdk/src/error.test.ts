@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { humanizeError, PercolatorError } from './error.js';
+import {
+  classifyError,
+  humanizeError,
+  PercolatorError,
+  SLASHING_ERROR_CODES,
+  RETRYABLE_ERROR_CODES,
+} from './error.js';
 
 describe('PercolatorError enum mirror', () => {
   it('common range (0-99) matches the Rust enum', () => {
@@ -30,6 +36,18 @@ describe('PercolatorError enum mirror', () => {
 
   it('perps-core range (600-699) matches the Rust enum', () => {
     expect(PercolatorError.RevealDeadlineExpired).toBe(600);
+  });
+
+  it('G12 — anti-toxicity 503 (InvalidCommitment) is exported', () => {
+    expect(PercolatorError.InvalidCommitment).toBe(503);
+  });
+
+  it('G12 — perps-core 602 (OperationPaused) is exported', () => {
+    expect(PercolatorError.OperationPaused).toBe(602);
+  });
+
+  it('G12 — legacy 107 (PortfolioInsufficientMargin) is exported', () => {
+    expect(PercolatorError.PortfolioInsufficientMargin).toBe(107);
   });
 });
 
@@ -206,5 +224,74 @@ describe('humanizeError — input guards', () => {
 
   it('throws on Infinity', () => {
     expect(() => humanizeError(Number.POSITIVE_INFINITY)).toThrow(/invalid input/i);
+  });
+});
+
+describe('G12 — humanizeError: new codes', () => {
+  it('InvalidCommitment (503) mentions slashing', () => {
+    const msg = humanizeError(PercolatorError.InvalidCommitment);
+    expect(msg).toMatch(/slashed/i);
+  });
+
+  it('RevealDeadlineExpired (600) mentions the next batch', () => {
+    const msg = humanizeError(PercolatorError.RevealDeadlineExpired);
+    expect(msg).toMatch(/next batch/i);
+  });
+
+  it('OperationPaused (602) tells the user to wait', () => {
+    const msg = humanizeError(PercolatorError.OperationPaused);
+    expect(msg).toMatch(/paused/i);
+  });
+
+  it('PortfolioInsufficientMargin (107) mentions free collateral', () => {
+    const msg = humanizeError(PercolatorError.PortfolioInsufficientMargin);
+    expect(msg).toMatch(/free collateral/i);
+  });
+});
+
+describe('G12 — classifyError (severity routing)', () => {
+  it('RevealDeadlineExpired → slashed', () => {
+    expect(classifyError(PercolatorError.RevealDeadlineExpired)).toBe('slashed');
+    expect(SLASHING_ERROR_CODES.has(PercolatorError.RevealDeadlineExpired)).toBe(true);
+  });
+
+  it('InvalidCommitment → slashed', () => {
+    expect(classifyError(PercolatorError.InvalidCommitment)).toBe('slashed');
+    expect(SLASHING_ERROR_CODES.has(PercolatorError.InvalidCommitment)).toBe(true);
+  });
+
+  it('InsufficientMargin → retryable', () => {
+    expect(classifyError(PercolatorError.InsufficientMargin)).toBe('retryable');
+    expect(RETRYABLE_ERROR_CODES.has(PercolatorError.InsufficientMargin)).toBe(true);
+  });
+
+  it('PortfolioInsufficientMargin (107) → retryable', () => {
+    expect(classifyError(PercolatorError.PortfolioInsufficientMargin)).toBe('retryable');
+  });
+
+  it('OperationPaused → fatal (do not retry, do not slash — wait for the pause to lift)', () => {
+    expect(classifyError(PercolatorError.OperationPaused)).toBe('fatal');
+  });
+
+  it('InvalidAccount → fatal', () => {
+    expect(classifyError(PercolatorError.InvalidAccount)).toBe('fatal');
+  });
+
+  it('legacy 105 → unknown', () => {
+    expect(classifyError(105)).toBe('unknown');
+  });
+
+  it('unknown high code 9999 → unknown', () => {
+    expect(classifyError(9999)).toBe('unknown');
+  });
+
+  it('accepts a bigint input', () => {
+    expect(classifyError(600n)).toBe('slashed');
+    expect(classifyError(400n)).toBe('retryable');
+  });
+
+  it('returns unknown for invalid input rather than throwing', () => {
+    expect(classifyError(-1)).toBe('unknown');
+    expect(classifyError(Number.NaN)).toBe('unknown');
   });
 });

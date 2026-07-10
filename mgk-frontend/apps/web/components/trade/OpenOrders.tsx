@@ -24,6 +24,7 @@ function formatSide(side: number): { label: string; tone: 'bull' | 'bear' } {
 export interface OpenOrdersProps {
   instrumentId: number;
   className?: string;
+  onCountChange?: (count: number) => void;
 }
 
 const CU_LIMIT = 200_000;
@@ -34,7 +35,8 @@ function buildCancelOrModifyIx(
   instrumentId: number,
 ): TransactionInstruction {
   const [portfolioPda] = sdk.derivePortfolioPda(publicKey, config.coreProgramId);
-  const [bookPda] = sdk.deriveBookPda(instrumentId, config.matcherProgramId);
+  const bookPda =
+    config.bookAddress ?? sdk.deriveBookPda(instrumentId, config.matcherProgramId)[0];
 
   return new TransactionInstruction({
     keys: [
@@ -48,7 +50,7 @@ function buildCancelOrModifyIx(
   });
 }
 
-export function OpenOrders({ instrumentId, className }: OpenOrdersProps) {
+export function OpenOrders({ instrumentId, className, onCountChange }: OpenOrdersProps) {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
   const [orders, setOrders] = useState<RestingOrder[]>([]);
@@ -59,16 +61,19 @@ export function OpenOrders({ instrumentId, className }: OpenOrdersProps) {
   const fetchOrders = useCallback(async () => {
     if (!publicKey) {
       setOrders([]);
+      onCountChange?.(0);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const [bookPda] = sdk.deriveBookPda(instrumentId, config.matcherProgramId);
+      const bookPda =
+        config.bookAddress ?? sdk.deriveBookPda(instrumentId, config.matcherProgramId)[0];
       const accounts = await connection.getMultipleAccountsInfo([bookPda]);
       const acc = accounts[0];
       if (!acc) {
         setOrders([]);
+        onCountChange?.(0);
         setLoading(false);
         return;
       }
@@ -77,12 +82,13 @@ export function OpenOrders({ instrumentId, className }: OpenOrdersProps) {
         (o) => o.user.toBase58() === publicKey.toBase58(),
       );
       setOrders(mine);
+      onCountChange?.(mine.length);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [publicKey, connection, instrumentId]);
+  }, [publicKey, connection, instrumentId, onCountChange]);
 
   useEffect(() => {
     const t = setTimeout(() => { void fetchOrders(); }, 0);

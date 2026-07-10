@@ -10,9 +10,11 @@ use pinocchio::{
 use crate::instructions::{
     CoreInstruction, process_add_instrument, process_cancel_all_resting_orders,
     process_cancel_resting_order, process_clear_batch, process_close_committing,
-    process_commit_order, process_deposit, process_init_portfolio, process_initialize,
-    process_liquidate_user, process_modify_resting_order, process_reveal_order,
-    process_set_pause_flags, process_settle_batch, process_withdraw,
+    process_commit_order, process_create_batch, process_create_portfolio, process_deposit,
+    process_init_portfolio, process_init_portfolio_for_user, process_init_vault,
+    process_initialize, process_liquidate_user, process_modify_resting_order,
+    process_reveal_order, process_set_batch_counter, process_set_pause_flags,
+    process_settle_batch, process_withdraw,
 };
 use crate::state::{Portfolio, Registry, Vault};
 use percolator_common::{
@@ -48,6 +50,11 @@ pub fn process_instruction(
         12 => CoreInstruction::ModifyRestingOrder,
         13 => CoreInstruction::CancelAllRestingOrders,
         14 => CoreInstruction::SetPauseFlags,
+        15 => CoreInstruction::InitVault,
+        16 => CoreInstruction::CreateBatch,
+        17 => CoreInstruction::SetBatchCounter,
+        18 => CoreInstruction::CreatePortfolio,
+        19 => CoreInstruction::InitPortfolioForUser,
         _ => {
             msg!("Error: Unknown instruction");
             return Err(PercolatorError::InvalidInstruction.into());
@@ -115,55 +122,88 @@ pub fn process_instruction(
             msg!("Instruction: SetPauseFlags");
             process_set_pause_flags_inner(program_id, accounts, &instruction_data[1..])
         }
+        CoreInstruction::InitVault => {
+            msg!("Instruction: InitVault");
+            process_init_vault_inner(program_id, accounts, &instruction_data[1..])
+        }
+        CoreInstruction::CreateBatch => {
+            msg!("Instruction: CreateBatch");
+            process_create_batch_inner(program_id, accounts, &instruction_data[1..])
+        }
+        CoreInstruction::SetBatchCounter => {
+            msg!("Instruction: SetBatchCounter");
+            process_set_batch_counter_inner(program_id, accounts, &instruction_data[1..])
+        }
+        CoreInstruction::CreatePortfolio => {
+            msg!("Instruction: CreatePortfolio");
+            process_create_portfolio_inner(program_id, accounts, &instruction_data[1..])
+        }
+        CoreInstruction::InitPortfolioForUser => {
+            msg!("Instruction: InitPortfolioForUser");
+            process_init_portfolio_for_user(program_id, accounts, &instruction_data[1..])
+        }
     }
 }
 
 /// Initialize registry + first instrument
 ///
 /// Accounts:
-/// 0. [writable] Registry PDA
+/// 0. [writable] Registry PDA (created via CPI)
 /// 1. [signer, writable] Governance
-/// 2. [writable] Default instrument PDA
+/// 2. [writable] Instrument #0 PDA (created via CPI)
 ///
-/// Data: governance(32) + base_deposit(8) + n_min(4) + t_min(8) + t_max(8) + t_reveal(8)
+/// Vault and Batch #0 are created by the keeper via CPI (SettleBatch).
+///
+/// Data: governance(32) + instrument_count(2) + volatility_multiplier(2)
+///       + batch_id_counter(8) + base_deposit(8) + n_min(4) + t_min(8) + t_max(8) + t_reveal(8)
 ///       + instrument_id(2) + tick(8) + lot(8) + imr(2) + mmr(2) + taker_fee_bps(2) + maker_fee_bps(2)
 ///       + oracle(32) + registry_bump(1) + instrument_bump(1)
+///     = 140 bytes
 fn process_initialize_inner(_program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     if accounts.len() < 3 {
         return Err(ProgramError::NotEnoughAccountKeys);
     }
-    // 32+8+4+8+8+8 + 2+8+8+2+2+2+2+32 + 1+1 = 128
-    if data.len() < 128 {
+    // 32+2+2+8+8+4+8+8+8 + 2+8+8+2+2+2+2+32 + 1+1 = 140
+    if data.len() < 140 {
         return Err(ProgramError::InvalidInstructionData);
     }
 
     let registry_account = &accounts[0];
-    let _governance_account = &accounts[1];
+    let governance_account = &accounts[1];
     let instrument_account = &accounts[2];
 
+    if !governance_account.is_signer() {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
     validate_writable(registry_account)?;
     validate_writable(instrument_account)?;
 
     let governance = Pubkey::from(<[u8; 32]>::try_from(&data[0..32]).unwrap());
-    let base_deposit = u64::from_le_bytes(data[32..40].try_into().unwrap());
-    let n_min = u32::from_le_bytes(data[40..44].try_into().unwrap());
-    let t_min_slots = u64::from_le_bytes(data[44..52].try_into().unwrap());
-    let t_max_slots = u64::from_le_bytes(data[52..60].try_into().unwrap());
-    let t_reveal_slots = u64::from_le_bytes(data[60..68].try_into().unwrap());
-    let instrument_id = u16::from_le_bytes(data[68..70].try_into().unwrap());
-    let tick_size = u64::from_le_bytes(data[70..78].try_into().unwrap());
-    let lot_size = u64::from_le_bytes(data[78..86].try_into().unwrap());
-    let imr_bps = u16::from_le_bytes(data[86..88].try_into().unwrap());
-    let mmr_bps = u16::from_le_bytes(data[88..90].try_into().unwrap());
-    let taker_fee_bps = u16::from_le_bytes(data[90..92].try_into().unwrap());
-    let maker_fee_bps = i16::from_le_bytes(data[92..94].try_into().unwrap());
-    let oracle_addr = Pubkey::from(<[u8; 32]>::try_from(&data[94..126]).unwrap());
-    let registry_bump = data[126];
-    let instrument_bump = data[127];
+    let instrument_count = u16::from_le_bytes(data[32..34].try_into().unwrap());
+    let volatility_multiplier = u16::from_le_bytes(data[34..36].try_into().unwrap());
+    let _batch_id_counter = u64::from_le_bytes(data[36..44].try_into().unwrap()); // always 0, parsed for alignment
+    let base_deposit = u64::from_le_bytes(data[44..52].try_into().unwrap());
+    let n_min = u32::from_le_bytes(data[52..56].try_into().unwrap());
+    let t_min_slots = u64::from_le_bytes(data[56..64].try_into().unwrap());
+    let t_max_slots = u64::from_le_bytes(data[64..72].try_into().unwrap());
+    let t_reveal_slots = u64::from_le_bytes(data[72..80].try_into().unwrap());
+    let instrument_id = u16::from_le_bytes(data[80..82].try_into().unwrap());
+    let tick_size = u64::from_le_bytes(data[82..90].try_into().unwrap());
+    let lot_size = u64::from_le_bytes(data[90..98].try_into().unwrap());
+    let imr_bps = u16::from_le_bytes(data[98..100].try_into().unwrap());
+    let mmr_bps = u16::from_le_bytes(data[100..102].try_into().unwrap());
+    let taker_fee_bps = u16::from_le_bytes(data[102..104].try_into().unwrap());
+    let maker_fee_bps = i16::from_le_bytes(data[104..106].try_into().unwrap());
+    let oracle_addr = Pubkey::from(<[u8; 32]>::try_from(&data[106..138]).unwrap());
+    let registry_bump = data[138];
+    let instrument_bump = data[139];
 
     process_initialize(
         registry_account,
+        governance_account,
         &governance,
+        instrument_count,
+        volatility_multiplier,
         base_deposit,
         n_min,
         t_min_slots,
@@ -363,7 +403,6 @@ fn process_commit_order_inner(program_id: &Pubkey, accounts: &[AccountInfo], dat
     let batch_account = &accounts[3];
     let registry_account = &accounts[4];
 
-    validate_owner(commitment_account, program_id)?;
     validate_writable(commitment_account)?;
     validate_owner(portfolio_account, program_id)?;
     validate_writable(portfolio_account)?;
@@ -381,6 +420,7 @@ fn process_commit_order_inner(program_id: &Pubkey, accounts: &[AccountInfo], dat
     let commitment_bump = data[37];
 
     process_commit_order(
+        program_id,
         commitment_account,
         user_account,
         portfolio_account,
@@ -783,6 +823,50 @@ fn process_set_pause_flags_inner(program_id: &Pubkey, accounts: &[AccountInfo], 
     process_set_pause_flags(registry, governance_account, flags)
 }
 
+/// Initialize the Vault (disc 15).
+///
+/// Accounts:
+/// 0. [writable] Vault account (pre-created via SystemProgram.createAccount)
+///
+/// Data: bump(1)
+fn process_init_vault_inner(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+    if accounts.is_empty() {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    if data.is_empty() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    let vault_account = &accounts[0];
+    validate_owner(vault_account, program_id)?;
+    validate_writable(vault_account)?;
+
+    let bump = data[0];
+    process_init_vault(vault_account, bump)
+}
+
+/// Create the first batch (disc 16).
+///
+/// Accounts:
+/// 0. [writable] Batch account (pre-created via SystemProgram.createAccount)
+/// 1. [] Registry
+///
+/// Data: bump(1)
+fn process_create_batch_inner(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+    if accounts.len() < 2 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    if data.is_empty() {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    let batch_account = &accounts[0];
+    let registry_account = &accounts[1];
+
+    let bump = data[0];
+    process_create_batch(program_id, batch_account, registry_account, bump)
+}
+
 /// M7 7.7: cancel every resting order owned by `user` across one or more
 /// matcher-owned book accounts.
 ///
@@ -831,4 +915,54 @@ fn process_cancel_all_resting_orders_inner(
         matcher_program,
         book_accounts,
     )
+}
+
+/// SetBatchCounter — disc 17. Governance-only. Resets `batch_id_counter`
+/// to 0 so `CreateBatch` can bootstrap batch 0.
+///
+/// Accounts:
+///   0: [writable] Registry
+///   1: [signer]   Governance (must equal registry.governance)
+///
+/// Data: none
+fn process_set_batch_counter_inner(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    _data: &[u8],
+) -> ProgramResult {
+    if accounts.len() < 2 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+
+    let registry_account = &accounts[0];
+    let governance_account = &accounts[1];
+
+    validate_owner(registry_account, program_id)?;
+    validate_writable(registry_account)?;
+
+    if !governance_account.is_signer() {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+
+    process_set_batch_counter(registry_account, governance_account)
+}
+
+/// Create and initialize a Portfolio PDA for a user.
+///
+/// Accounts:
+///   0: [writable] Portfolio PDA (created by this instruction via CPI)
+///   1: [signer]   User wallet
+///   2: []         System program
+///
+/// Data: disc(1) + bump(1) = 2 bytes total (full data passed to inner fn)
+fn process_create_portfolio_inner(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    if accounts.len() < 3 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    // data[0] = disc, data[1] = bump; inner reads bump from data[1]
+    process_create_portfolio(program_id, accounts, data)
 }

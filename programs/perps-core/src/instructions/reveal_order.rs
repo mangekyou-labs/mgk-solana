@@ -50,7 +50,9 @@ pub fn process_reveal_order(
     }
 
     // Read batch state
-    let batch = unsafe { &*(batch_account.borrow_data_unchecked().as_ptr() as *const Batch) };
+    let batch = unsafe {
+        &mut *(batch_account.borrow_mut_data_unchecked().as_ptr() as *mut Batch)
+    };
     if batch.batch_id != batch_id {
         msg!("Error: Wrong batch ID");
         return Err(PercolatorError::InvalidInstruction.into());
@@ -130,6 +132,7 @@ pub fn process_reveal_order(
         _padding: [0; 3],
     };
     commitment.status = CommitmentStatus::Revealed;
+    batch.total_revealed = batch.total_revealed.saturating_add(1);
 
     msg!("RevealOrder: commitment revealed");
     Ok(())

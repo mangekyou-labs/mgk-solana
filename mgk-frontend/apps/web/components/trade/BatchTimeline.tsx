@@ -13,15 +13,17 @@ import { useBatchPolling } from '@/lib/stores/useBatchStore';
 import { useSlotPolling } from '@/lib/stores/useSlotPolling';
 import { useDevtools } from '@/lib/hooks/useDevtools';
 import { config } from '@/lib/config';
+import { resolveBatchAddress, resolveRegistryAddress } from '@/lib/onchainAccounts';
 import {
   PHASE_LABEL,
   PHASE_TONE,
   deriveDeadline,
-  formatSlotDuration,
+  formatBatchCountdown,
+  isPastActionDeadline,
 } from '@/lib/trade/batchDisplay';
 
 export function BatchTimeline() {
-  const { data, currentBatchId } = useBatchPolling(3000);
+  const { data, registry, currentBatchId } = useBatchPolling(3000);
   const { slot: currentSlot } = useSlotPolling(1000);
   const devtools = useDevtools();
   const { publicKey, sendTransaction, connected } = useWallet();
@@ -31,24 +33,29 @@ export function BatchTimeline() {
 
   const { deadline, isPastDeadline, deadlineLabel } = useMemo(() => {
     if (!data) return { deadline: null, isPastDeadline: false, deadlineLabel: '' };
-    return deriveDeadline(data.status, data, currentSlot);
-  }, [data, currentSlot]);
+    const info = deriveDeadline(data.status, data, currentSlot);
+    return {
+      ...info,
+      isPastDeadline: isPastActionDeadline(data.status, data, currentSlot, registry),
+    };
+  }, [data, currentSlot, registry]);
 
   const countdown = useMemo(() => {
     if (!data || deadline == null || currentSlot == null) return '—';
-    return formatSlotDuration(Number(deadline) - currentSlot);
-  }, [data, deadline, currentSlot]);
+    return formatBatchCountdown(data.status, data, currentSlot, registry);
+  }, [data, deadline, currentSlot, registry]);
 
   const handleCrank = useCallback(async () => {
     if (!publicKey || !currentBatchId || !data) return;
     setCranking(true);
     setCrankError(null);
     try {
-      const [batchPda] = sdk.deriveBatchPda(
-        currentBatchId,
-        config.coreProgramId,
-      );
-      const [registryPda] = sdk.deriveRegistryPda(config.coreProgramId);
+      const batchPda = await resolveBatchAddress({
+        batchId: currentBatchId,
+        programId: config.coreProgramId,
+        batchAddress: config.batchAddress,
+      });
+      const registryPda = resolveRegistryAddress(config.coreProgramId);
       const ix = new TransactionInstruction({
         programId: config.coreProgramId,
         keys: [

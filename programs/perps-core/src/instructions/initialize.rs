@@ -1,4 +1,3 @@
-use crate::state::{Instrument, Registry};
 use pinocchio::{
     account_info::AccountInfo,
     msg,
@@ -9,7 +8,7 @@ use pinocchio::{
 #[allow(clippy::too_many_arguments)]
 pub fn process_initialize(
     registry_account: &AccountInfo,
-    governance_account: &AccountInfo,
+    _governance_account: &AccountInfo,
     governance: &Pubkey,
     instrument_count: u16,
     volatility_multiplier: u16,
@@ -121,8 +120,8 @@ pub fn process_initialize(
         // cum_funding @86..102 left zero (i128 zeroed)
         *(dst.add(102) as *mut u64) = 0;                                  // @102 last_funding_slot
         *(dst.add(110) as *mut u64) = 100u64;                             // @110 funding_interval_slots
-        *(dst.add(118) as *mut u8) = 1;                                   // @118 is_active = true
-        *(dst.add(119) as *mut u8) = instrument_bump;                     // @119 bump
+        *dst.add(118) = 1;                                                // @118 is_active = true
+        *dst.add(119) = instrument_bump;                                  // @119 bump
         // _padding @120..126 left zero
         *(dst.add(126) as *mut i64) = 0;                                  // @126 mark_price
         *(dst.add(134) as *mut u64) = 1_000u64;                           // @134 mark_reference_qty
@@ -131,7 +130,7 @@ pub fn process_initialize(
         *(dst.add(158) as *mut i64) = 5;                                  // @158 deviation_cap_bps
         *(dst.add(166) as *mut i64) = 50;                                 // @166 funding_cap_bps
         *(dst.add(174) as *mut u64) = 10_000u64;                          // @174 funding_sample_qty
-        *(dst.add(182) as *mut u8) = 8;                                   // @182 funding_sma_window
+        *dst.add(182) = 8;                                                // @182 funding_sma_window
         // premium_sample_count @183 left zero
         // _pad_funding @184..190 left zero
         // premium_samples @190..318 left zero ([0; 16] i128s)

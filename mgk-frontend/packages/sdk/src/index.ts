@@ -23,6 +23,7 @@ export {
   deriveVaultPda,
 } from './pda.js';
 export * as state from './state/index.js';
+export { decodeBatch, BATCH_SIZE, COMMITMENT_SIZE, REGISTRY_SIZE } from './state/index.js';
 export * as programs from './programs/index.js';
 
 export {
@@ -32,7 +33,11 @@ export {
 export {
   humanizeError,
   PercolatorError,
+  classifyError,
+  SLASHING_ERROR_CODES,
+  RETRYABLE_ERROR_CODES,
 } from './error.js';
+export type { ErrorSeverity } from './error.js';
 export {
   decodePriceOracle,
   PRICE_ORACLE_MAGIC,

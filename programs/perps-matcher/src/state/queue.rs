@@ -1,5 +1,6 @@
 use super::order::{LimitOrder, OrderType};
 use crate::state::clearing::MAX_ORDERS;
+use core::mem;
 
 /// Orders partitioned into three priority queues, stored in a single array.
 ///
@@ -42,6 +43,20 @@ impl PartitionedOrders {
             alo_count: 0,
             regular_count: 0,
         }
+    }
+
+    /// Zero this struct in-place without initializing the orders array on the
+    /// caller's frame. BPF-safe alternative to `new()`.
+    #[inline(always)]
+    pub fn zeroed_in_place(&mut self) {
+        // SAFETY: LimitOrder is repr(C) with only Copy fields; any byte
+        // pattern is valid. The caller owns this memory.
+        for o in self.orders.iter_mut() {
+            *o = unsafe { mem::zeroed() };
+        }
+        self.cancel_count = 0;
+        self.alo_count = 0;
+        self.regular_count = 0;
     }
 
     pub fn cancels(&self) -> &[LimitOrder] {

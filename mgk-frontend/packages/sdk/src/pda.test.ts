@@ -11,7 +11,7 @@ import {
   deriveVaultPda,
 } from './pda.js';
 
-const CORE = new PublicKey('CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5');
+const CORE = new PublicKey('J5fVjwm96cQxcSqUz4QAmRBT75x7aN9NgG4xcnMmcfSv');
 const MATCHER = new PublicKey('AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF');
 const USER = new PublicKey('A6qbhK9mPRpFhX7D1kZsBpr2xNy8mfgU5J7Vu9xLE5Rp');
 const SALT = 0x123456789abcdef0n;
@@ -33,7 +33,7 @@ describe('SEEDS', () => {
 describe('derivePortfolioPda', () => {
   it('matches the known vector for (USER, CORE)', () => {
     const [pk, bump] = derivePortfolioPda(USER, CORE);
-    expect(pk.toBase58()).toBe('DMncTqpbfvpeeZuNQ4864BrMGQAbvL5QfSfva56v8ABv');
+    expect(pk.toBase58()).toBe('3oXr8bQ8XhvtGJpmfxiJPgAjbVincwtQ1oGVbs2Y69mH');
     expect(bump).toBe(255);
   });
 
@@ -53,8 +53,8 @@ describe('derivePortfolioPda', () => {
 describe('deriveInstrumentPda', () => {
   it('matches the known vector for (INSTR=1, CORE)', () => {
     const [pk, bump] = deriveInstrumentPda(INSTR, CORE);
-    expect(pk.toBase58()).toBe('9yfEAzsYdqcMuUqHgFi7VvhrdGVPSXj9t8KQnWF2QNcP');
-    expect(bump).toBe(253);
+    expect(pk.toBase58()).toBe('6YyY1w4vzXC8MTq8BqGeeiyEGGR27XuyPyFz11KBrWYm');
+    expect(bump).toBe(254);
   });
 
   it('changes when instrument id changes', () => {
@@ -67,8 +67,8 @@ describe('deriveInstrumentPda', () => {
 describe('deriveVaultPda', () => {
   it('matches the known vector for CORE', () => {
     const [pk, bump] = deriveVaultPda(CORE);
-    expect(pk.toBase58()).toBe('E26LbD1tsYqs8R5PyFtfASckjULF6UXeaz5VpXShWJ62');
-    expect(bump).toBe(255);
+    expect(pk.toBase58()).toBe('5uzb4tEfDicoioE64ucvmyafWVwaURazYtPpasX7Zjah');
+    expect(bump).toBe(252);
   });
 
   it('changes when program id changes', () => {
@@ -81,15 +81,15 @@ describe('deriveVaultPda', () => {
 describe('deriveRegistryPda', () => {
   it('matches the known vector for CORE', () => {
     const [pk, bump] = deriveRegistryPda(CORE);
-    expect(pk.toBase58()).toBe('6XdDSB8VJgmKXpGgawLCBobxLeivpxVhsAqWgUifaQAU');
-    expect(bump).toBe(254);
+    expect(pk.toBase58()).toBe('5NCK5ACLtFjANfGtZfqWRzDJhnPQGvEgJn7nLiMzuasv');
+    expect(bump).toBe(252);
   });
 });
 
 describe('deriveBatchPda', () => {
   it('matches the known vector for (BATCH=42, CORE)', () => {
     const [pk, bump] = deriveBatchPda(BATCH, CORE);
-    expect(pk.toBase58()).toBe('9R1NWMLBdeo5hfoCw5J3V4beXkggzdAbpkTx9KY7FKNR');
+    expect(pk.toBase58()).toBe('GLLshEaXwfkFc9ZouHdyDrQnSCtTMrTKKbZEgNVMbnBU');
     expect(bump).toBe(255);
   });
 
@@ -103,7 +103,7 @@ describe('deriveBatchPda', () => {
 describe('deriveCommitmentPda', () => {
   it('matches the known vector for (BATCH=42, USER, SALT, CORE)', () => {
     const [pk, bump] = deriveCommitmentPda(BATCH, USER, SALT, CORE);
-    expect(pk.toBase58()).toBe('AFUUnj2VrCgxqoKPHhqsWpPMvhjmZwP35uP8JiBVGUCQ');
+    expect(pk.toBase58()).toBe('7acgCNhK481amg2M28gE6GoFE2NY65WhTSYpQkLJKREV');
     expect(bump).toBe(253);
   });
 

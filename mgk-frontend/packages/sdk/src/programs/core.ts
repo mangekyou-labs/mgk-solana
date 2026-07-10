@@ -22,6 +22,13 @@ export const CORE_INSTRUCTION = {
   AddInstrument: 10,
   CancelRestingOrder: 11,
   ModifyRestingOrder: 12,
+  CancelAllRestingOrders: 13,
+  SetPauseFlags: 14,
+  InitVault: 15,
+  CreateBatch: 16,
+  SetBatchCounter: 17,
+  CreatePortfolio: 18,
+  InitPortfolioForUser: 19,
 } as const;
 export type CoreInstruction =
   (typeof CORE_INSTRUCTION)[keyof typeof CORE_INSTRUCTION];
@@ -246,8 +253,80 @@ export function encodeAddInstrument(params: AddInstrumentParams): Uint8Array {
 }
 
 /**
- * Initialize (governance-only) — discriminator only, 1 byte.
+ * Initialize — discriminator + 131 bytes params, 132 total.
+ * Wire format (matches process_initialize_inner data layout):
+ *   governance(32) + base_deposit(8) + n_min(4) + t_min(8) + t_max(8) + t_reveal(8)
+ *   + instrument_id(2) + tick(8) + lot(8) + imr(2) + mmr(2) + taker_fee(2) + maker_fee(2)
+ *   + oracle(32) + registry_bump(1) + instrument_bump(1) + vault_bump(1) + batch_bump(1)
+ *   = 131 bytes params.
  */
-export function encodeInitialize(): Uint8Array {
-  return new Uint8Array([CORE_INSTRUCTION.Initialize]);
+export interface InitializeParams {
+  governance: Uint8Array;
+  baseDeposit: bigint;
+  nMin: number;
+  tMinSlots: bigint;
+  tMaxSlots: bigint;
+  tRevealSlots: bigint;
+  instrumentId: number;
+  tickSize: bigint;
+  lotSize: bigint;
+  imrBps: number;
+  mmrBps: number;
+  takerFeeBps: number;
+  makerFeeBps: number;
+  oracleAddr: Uint8Array;
+  registryBump: number;
+  instrumentBump: number;
+  vaultBump: number;
+  batchBump: number;
+}
+
+export function encodeInitialize(params: InitializeParams): Uint8Array {
+  const buf = new Uint8Array(132);
+  buf.set(params.governance, 1);                              // 1..33
+  const view = new DataView(buf.buffer);
+  view.setBigUint64(33, params.baseDeposit, true);           // 33..41
+  view.setUint32(41, params.nMin, true);                     // 41..45
+  view.setBigUint64(45, params.tMinSlots, true);             // 45..53
+  view.setBigUint64(53, params.tMaxSlots, true);             // 53..61
+  view.setBigUint64(61, params.tRevealSlots, true);           // 61..69
+  view.setUint16(69, params.instrumentId, true);             // 69..71
+  view.setBigUint64(71, params.tickSize, true);              // 71..79
+  view.setBigUint64(79, params.lotSize, true);                // 79..87
+  view.setUint16(87, params.imrBps, true);                   // 87..89
+  view.setUint16(89, params.mmrBps, true);                   // 89..91
+  view.setUint16(91, params.takerFeeBps, true);             // 91..93
+  view.setInt16(93, params.makerFeeBps, true);              // 93..95
+  buf.set(params.oracleAddr, 95);                            // 95..127
+  buf[127] = params.registryBump;                           // 127
+  buf[128] = params.instrumentBump;                         // 128
+  buf[129] = params.vaultBump;                              // 129
+  buf[130] = params.batchBump;                              // 130
+  buf[0] = CORE_INSTRUCTION.Initialize;                      // disc @ 0
+  return buf;
+}
+
+/**
+ * CreatePortfolio — discriminator + bump, 2 bytes total.
+ * Atomic create + initialize via invoke_signed(SystemProgram.createAccount).
+ * Wire format: disc(1) + bump(1) = 2.
+ */
+export function encodeCreatePortfolio(bump: number): Uint8Array {
+  const buf = new Uint8Array(2);
+  buf[0] = CORE_INSTRUCTION.CreatePortfolio;
+  buf[1] = bump;
+  return buf;
+}
+
+/**
+ * InitPortfolioForUser — discriminator + user_pubkey, 33 bytes total.
+ * Keeper calls this to create + initialize a Portfolio PDA for a user.
+ * Wire format: disc(1) + user_pubkey(32) = 33.
+ * Entrypoint strips disc 19, passes 32-byte user pubkey to inner function.
+ */
+export function encodeInitPortfolioForUser(user: Uint8Array): Uint8Array {
+  const buf = new Uint8Array(33);
+  buf[0] = CORE_INSTRUCTION.InitPortfolioForUser;
+  buf.set(user, 1);
+  return buf;
 }

@@ -3,8 +3,17 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { BottomTabs, type TabId } from './BottomTabs';
 
+vi.mock('@solana/wallet-adapter-react', () => ({
+  useWallet: () => ({
+    publicKey: { toBase58: () => 'DdqGmK5uamYN5vmuZrzpQhKeehLdwtPLVJdhu5P2iJKC' },
+    connected: true,
+  }),
+}));
 vi.mock('@/lib/stores/usePortfolioStore', () => ({
   usePortfolioPolling: () => ({ data: null, loading: false, error: null }),
+}));
+vi.mock('@/lib/stores/useMyFillsStore', () => ({
+  useMyFills: () => ({ fills: [], loading: false, error: null, isPolling: false }),
 }));
 vi.mock('@/components/portfolio/Balances', () => ({
   Balances: () => <div data-testid="balances-stub">BalancesStub</div>,
@@ -14,6 +23,21 @@ vi.mock('@/components/portfolio/Positions', () => ({
 }));
 vi.mock('./OpenOrders', () => ({
   OpenOrders: () => <div data-testid="open-orders-stub">OpenOrdersStub</div>,
+}));
+vi.mock('./history/TradeHistory', () => ({
+  TradeHistory: () => <div data-testid="trade-history-stub">TradeHistoryStub</div>,
+}));
+vi.mock('./history/OrderHistory', () => ({
+  OrderHistory: () => <div data-testid="order-history-stub">OrderHistoryStub</div>,
+}));
+vi.mock('./history/FundingHistory', () => ({
+  FundingHistory: () => <div data-testid="funding-history-stub">FundingHistoryStub</div>,
+}));
+vi.mock('./history/PositionHistory', () => ({
+  PositionHistory: () => <div data-testid="position-history-stub">PositionHistoryStub</div>,
+}));
+vi.mock('./history/AccountHistory', () => ({
+  AccountHistory: () => <div data-testid="account-history-stub">AccountHistoryStub</div>,
 }));
 
 describe('BottomTabs', () => {
@@ -103,7 +127,7 @@ describe('BottomTabs', () => {
       .find((t) => t.getAttribute('data-tab-id') === 'order-history')!;
     fireEvent.click(orderHistoryTab);
     expect(screen.getByTestId('bottom-tabs-content')).toHaveTextContent(
-      'No order history.',
+      'OrderHistoryStub',
     );
   });
 
@@ -121,7 +145,7 @@ describe('BottomTabs', () => {
     expect(balancesTab.getAttribute('data-active')).toBe('true');
   });
 
-  it('shows count badges for Positions and Open Orders tabs', () => {
+  it('shows a state-driven count badge for Positions and no unknown Open Orders count', () => {
     render(<BottomTabs />);
     const tabs = screen.getAllByTestId('bottom-tab');
     const positionsTab = tabs.find(
@@ -135,7 +159,7 @@ describe('BottomTabs', () => {
     ).toHaveTextContent('(0)');
     expect(
       within(ordersTab).queryByTestId('bottom-tab-count'),
-    ).toHaveTextContent('(0)');
+    ).toBeNull();
   });
 
   it('does not show count badges for tabs without a count', () => {
@@ -159,25 +183,24 @@ describe('BottomTabs', () => {
   });
 
   it('renders the empty message for the fallback tabs (no real component)', () => {
-    // positions, open-orders, and balances now mount real components
-    // (mocked as stubs in this file). The remaining 5 tabs fall back
-    // to the EMPTY_MESSAGES lookup.
-    const fallbackMessages: Partial<Record<TabId, string>> = {
-      'order-history': 'No order history.',
-      'trade-history': 'No trade history.',
-      'funding-history': 'No funding history.',
-      'position-history': 'No position history.',
-      'account-history': 'No account history.',
+    // Every tab now mounts a real component (mocked as a stub in this file).
+    // Verify each of the 5 history tabs wires through to its real component.
+    const stubs: Partial<Record<TabId, string>> = {
+      'order-history': 'OrderHistoryStub',
+      'trade-history': 'TradeHistoryStub',
+      'funding-history': 'FundingHistoryStub',
+      'position-history': 'PositionHistoryStub',
+      'account-history': 'AccountHistoryStub',
     };
 
     render(<BottomTabs />);
-    for (const [tabId, message] of Object.entries(fallbackMessages)) {
+    for (const [tabId, stub] of Object.entries(stubs)) {
       const tab = screen
         .getAllByTestId('bottom-tab')
         .find((t) => t.getAttribute('data-tab-id') === tabId)!;
       fireEvent.click(tab);
       expect(screen.getByTestId('bottom-tabs-content')).toHaveTextContent(
-        message as string,
+        stub as string,
       );
     }
   });
@@ -197,6 +220,19 @@ describe('BottomTabs', () => {
     expect(
       within(screen.getByTestId('bottom-tabs-content')).getByTestId(
         'bottom-tabs-open-orders',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('passes instrumentId through to TradeHistory (instrumentId=3)', () => {
+    render(<BottomTabs instrumentId={3} />);
+    const tradeTab = screen
+      .getAllByTestId('bottom-tab')
+      .find((t) => t.getAttribute('data-tab-id') === 'trade-history')!;
+    fireEvent.click(tradeTab);
+    expect(
+      within(screen.getByTestId('bottom-tabs-content')).getByTestId(
+        'bottom-tabs-trade-history',
       ),
     ).toBeInTheDocument();
   });

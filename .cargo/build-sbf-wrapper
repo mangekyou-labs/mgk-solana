@@ -1,0 +1,15 @@
+#!/bin/bash
+# Build SBF programs then strip .bss sections.
+# The BPF loader rejects writable NOBITS sections.
+# Usage: cargo sbf  (alias for cargo build-sbf with automatic .bss strip)
+
+set -e
+
+# Run cargo build-sbf (pass all arguments)
+cargo build-sbf -- "$@"
+
+# Strip .bss and .bss.S from all compiled .so files
+for so in target/deploy/*.so; do
+    [ -f "$so" ] || continue
+    llvm-objcopy --remove-section .bss --remove-section .bss.S "$so" "$so" 2>/dev/null && echo "Stripped .bss from $so" || echo "No .bss in $so"
+done

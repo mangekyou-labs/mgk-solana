@@ -41,6 +41,11 @@ interface OrderFormStore extends OrderFormState {
 }
 
 const STORAGE_KEY = 'mgk-order-form';
+const IN_FLIGHT_STATUSES: OrderFormStatus[] = [
+  'committing',
+  'awaiting_reveal',
+  'revealing',
+];
 
 function serialize(state: OrderFormState): string {
   return JSON.stringify({
@@ -56,7 +61,7 @@ function deserialize(json: string | null): OrderFormState | null {
   if (!json) return null;
   try {
     const raw = JSON.parse(json);
-    return {
+    const state = {
       instrumentId: raw.instrumentId ?? 0,
       side: raw.side ?? 'buy',
       price: BigInt(raw.price ?? '0'),
@@ -67,6 +72,8 @@ function deserialize(json: string | null): OrderFormState | null {
       hash: raw.hash ?? '',
       status: raw.status ?? 'idle',
     };
+    if (!isRecoverableState(state)) return null;
+    return state;
   } catch {
     return null;
   }
@@ -74,7 +81,12 @@ function deserialize(json: string | null): OrderFormState | null {
 
 function loadInitialState(): OrderFormState {
   if (typeof window === 'undefined') return getDefaultState();
-  return deserialize(window.localStorage.getItem(STORAGE_KEY)) ?? getDefaultState();
+  const state = deserialize(window.localStorage.getItem(STORAGE_KEY));
+  if (!state) {
+    window.localStorage.removeItem(STORAGE_KEY);
+    return getDefaultState();
+  }
+  return state;
 }
 
 function getDefaultState(): OrderFormState {
@@ -89,6 +101,16 @@ function getDefaultState(): OrderFormState {
     hash: '',
     status: 'idle',
   };
+}
+
+function isRecoverableState(state: OrderFormState): boolean {
+  if (!IN_FLIGHT_STATUSES.includes(state.status)) return true;
+  return (
+    state.price > 0n &&
+    state.qty > 0n &&
+    state.salt > 0n &&
+    state.hash.length > 0
+  );
 }
 
 export const useOrderFormStore = create<OrderFormStore>((set) => ({

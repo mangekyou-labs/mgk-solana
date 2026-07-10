@@ -9,6 +9,8 @@ export interface Store {
   upsertMarketState: ReturnType<DB['prepare']>;
   getLatestSlot: ReturnType<DB['prepare']>;
   recompute24hVolume: ReturnType<DB['prepare']>;
+  insertPortfolio: ReturnType<DB['prepare']>;
+  getPortfolio: ReturnType<DB['prepare']>;
   close: () => void;
 }
 
@@ -83,6 +85,13 @@ CREATE TABLE IF NOT EXISTS market_state (
   updated_ts INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS portfolios (
+  user_pubkey TEXT PRIMARY KEY,
+  portfolio_pubkey TEXT NOT NULL,
+  created_slot INTEGER NOT NULL,
+  created_tx TEXT NOT NULL
+);
+
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 `;
@@ -141,6 +150,15 @@ export function createStore(dbPath = ':memory:'): Store {
     ), 0)
   `);
 
+  const insertPortfolio = db.prepare(`
+    INSERT OR IGNORE INTO portfolios (user_pubkey, portfolio_pubkey, created_slot, created_tx)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  const getPortfolio = db.prepare(`
+    SELECT portfolio_pubkey FROM portfolios WHERE user_pubkey = ?
+  `);
+
   return {
     db,
     insertFill,
@@ -149,6 +167,8 @@ export function createStore(dbPath = ':memory:'): Store {
     upsertMarketState,
     getLatestSlot,
     recompute24hVolume,
+    insertPortfolio,
+    getPortfolio,
     close: () => db.close(),
   };
 }

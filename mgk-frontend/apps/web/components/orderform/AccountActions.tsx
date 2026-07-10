@@ -93,7 +93,7 @@ export function AccountActions({
             disabled={busy}
             className="flex-1 py-1 rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {busy ? 'Creating…' : 'Init Portfolio'}
+                        {busy ? 'Creating…' : 'Set Up Account'}
           </button>
         ) : (
           <>

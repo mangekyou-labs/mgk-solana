@@ -1,10 +1,18 @@
-use crate::state::{Batch, BatchStatus, Commitment, Portfolio, Registry};
-use percolator_common::PercolatorError;
+use crate::state::{Batch, BatchStatus, Commitment, Portfolio, Registry, MAX_COMMITMENTS};
+use percolator_common::{validate_owner, PercolatorError};
 use pinocchio::{
-    account_info::AccountInfo, msg, pubkey::Pubkey, ProgramResult,
+    account_info::AccountInfo,
+    instruction::{AccountMeta, Instruction, Signer},
+    msg,
+    program::invoke_signed,
+    program_error::ProgramError,
+    pubkey::{find_program_address, Pubkey},
+    sysvars::{rent::Rent, Sysvar},
+    ProgramResult,
 };
 
 #[repr(C)]
+#[cfg(any(target_os = "solana", feature = "host-hash"))]
 struct SolBytes {
     addr: *const u8,
     len: u64,
@@ -14,6 +22,12 @@ struct SolBytes {
 extern "C" {
     fn sol_sha256(vals: *const SolBytes, vals_len: u64, result: *mut u8);
 }
+
+const COMMITMENT_SPACE: usize = core::mem::size_of::<Commitment>();
+const SYSTEM_PROGRAM_ID_BYTES: [u8; 32] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0,
+];
 
 /// Host-side SHA-256 fallback so the lib compiles for non-BPF targets
 /// (e.g. `cargo test`, `cargo test-sbf` host build). The wire-compatible
@@ -43,6 +57,10 @@ mod host_sha256 {
 ///   + side(1) + price(8) + qty(8) + salt(8)
 ///   + user(32) + batch_id(8) = 69 bytes
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(
+    not(any(target_os = "solana", feature = "host-hash")),
+    allow(unused_variables)
+)]
 pub fn compute_commitment_hash(
     order_type: u8,
     instrument_id: u16,
@@ -54,40 +72,49 @@ pub fn compute_commitment_hash(
     user: &Pubkey,
     batch_id: u64,
 ) -> [u8; 32] {
-    let order_type_bytes = [order_type; 1];
-    let instrument_id_bytes = instrument_id.to_le_bytes();
-    let reduce_only_bytes = [reduce_only as u8; 1];
-    let side_bytes = [side; 1];
-    let price_bytes = price.to_le_bytes();
-    let qty_bytes = qty.to_le_bytes();
-    let salt_bytes = salt.to_le_bytes();
-    let user_bytes = user.as_ref();
-    let batch_bytes = batch_id.to_le_bytes();
-
-    let parts: [SolBytes; 9] = [
-        SolBytes { addr: order_type_bytes.as_ptr(), len: 1 },
-        SolBytes { addr: instrument_id_bytes.as_ptr(), len: 2 },
-        SolBytes { addr: reduce_only_bytes.as_ptr(), len: 1 },
-        SolBytes { addr: side_bytes.as_ptr(), len: 1 },
-        SolBytes { addr: price_bytes.as_ptr(), len: 8 },
-        SolBytes { addr: qty_bytes.as_ptr(), len: 8 },
-        SolBytes { addr: salt_bytes.as_ptr(), len: 8 },
-        SolBytes { addr: user_bytes.as_ptr(), len: 32 },
-        SolBytes { addr: batch_bytes.as_ptr(), len: 8 },
-    ];
-
-    let mut hash = [0u8; 32];
-    #[cfg(target_os = "solana")]
-    unsafe {
-        sol_sha256(parts.as_ptr(), 9, hash.as_mut_ptr());
+    #[cfg(not(any(target_os = "solana", feature = "host-hash")))]
+    {
+        [0u8; 32]
     }
-    #[cfg(all(not(target_os = "solana"), feature = "host-hash"))]
-    host_sha256::sol_sha256(parts.as_ptr(), 9, hash.as_mut_ptr());
-    hash
+
+    #[cfg(any(target_os = "solana", feature = "host-hash"))]
+    {
+        let order_type_bytes = [order_type; 1];
+        let instrument_id_bytes = instrument_id.to_le_bytes();
+        let reduce_only_bytes = [reduce_only as u8; 1];
+        let side_bytes = [side; 1];
+        let price_bytes = price.to_le_bytes();
+        let qty_bytes = qty.to_le_bytes();
+        let salt_bytes = salt.to_le_bytes();
+        let user_bytes = user.as_ref();
+        let batch_bytes = batch_id.to_le_bytes();
+
+        let parts: [SolBytes; 9] = [
+            SolBytes { addr: order_type_bytes.as_ptr(), len: 1 },
+            SolBytes { addr: instrument_id_bytes.as_ptr(), len: 2 },
+            SolBytes { addr: reduce_only_bytes.as_ptr(), len: 1 },
+            SolBytes { addr: side_bytes.as_ptr(), len: 1 },
+            SolBytes { addr: price_bytes.as_ptr(), len: 8 },
+            SolBytes { addr: qty_bytes.as_ptr(), len: 8 },
+            SolBytes { addr: salt_bytes.as_ptr(), len: 8 },
+            SolBytes { addr: user_bytes.as_ptr(), len: 32 },
+            SolBytes { addr: batch_bytes.as_ptr(), len: 8 },
+        ];
+
+        let mut hash = [0u8; 32];
+        #[cfg(target_os = "solana")]
+        unsafe {
+            sol_sha256(parts.as_ptr(), 9, hash.as_mut_ptr());
+        }
+        #[cfg(all(not(target_os = "solana"), feature = "host-hash"))]
+        host_sha256::sol_sha256(parts.as_ptr(), 9, hash.as_mut_ptr());
+        hash
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn process_commit_order(
+    program_id: &Pubkey,
     commitment_account: &AccountInfo,
     user_account: &AccountInfo,
     portfolio_account: &AccountInfo,
@@ -101,7 +128,7 @@ pub fn process_commit_order(
     qty: u64,
     salt: u64,
     batch_id: u64,
-    _commitment_bump: u8,
+    commitment_bump: u8,
 ) -> ProgramResult {
     // M7 7.8: governance emergency brake. Trading pause blocks new
     // commitments. Read the registry first so a paused caller fails
@@ -117,13 +144,81 @@ pub fn process_commit_order(
         return Err(PercolatorError::Unauthorized.into());
     }
 
-    let batch = unsafe { &*(batch_account.borrow_data_unchecked().as_ptr() as *const Batch) };
+    let (expected_commitment, expected_bump) = find_program_address(
+        &[
+            b"commitment",
+            &batch_id.to_le_bytes(),
+            user_account.key().as_ref(),
+            &salt.to_le_bytes(),
+        ],
+        program_id,
+    );
+    if commitment_account.key() != &expected_commitment || commitment_bump != expected_bump {
+        msg!("Error: Invalid commitment PDA");
+        return Err(PercolatorError::InvalidAccount.into());
+    }
+
+    if commitment_account.data_len() < COMMITMENT_SPACE {
+        let rent_exempt = Rent::get()?.minimum_balance(COMMITMENT_SPACE);
+        let lamports_needed = rent_exempt.saturating_sub(commitment_account.lamports());
+        if user_account.lamports() < lamports_needed {
+            msg!("Error: insufficient SOL for commitment rent");
+            return Err(ProgramError::InsufficientFunds);
+        }
+
+        let mut ix_data = [0u8; 52];
+        ix_data[0..4].copy_from_slice(&0u32.to_le_bytes());
+        ix_data[4..12].copy_from_slice(&lamports_needed.to_le_bytes());
+        ix_data[12..20].copy_from_slice(&(COMMITMENT_SPACE as u64).to_le_bytes());
+        ix_data[20..52].copy_from_slice(program_id.as_ref());
+
+        let system_program_id = Pubkey::from(SYSTEM_PROGRAM_ID_BYTES);
+        let create_ix = Instruction {
+            program_id: &system_program_id,
+            accounts: &[
+                AccountMeta::writable_signer(user_account.key()),
+                AccountMeta::writable_signer(&expected_commitment),
+            ],
+            data: &ix_data,
+        };
+
+        let batch_id_seed = batch_id.to_le_bytes();
+        let salt_seed = salt.to_le_bytes();
+        let bump_seed = [commitment_bump];
+
+        let signer_seeds = pinocchio::seeds!(
+            b"commitment",
+            &batch_id_seed,
+            user_account.key().as_ref(),
+            &salt_seed,
+            &bump_seed
+        );
+        let signer = Signer::from(&signer_seeds);
+        let signers = [signer];
+
+        invoke_signed::<2>(
+            &create_ix,
+            &[user_account, commitment_account],
+            &signers,
+        )?;
+
+        msg!("CommitOrder: created commitment PDA");
+    }
+    validate_owner(commitment_account, program_id)?;
+
+    let batch = unsafe {
+        &mut *(batch_account.borrow_mut_data_unchecked().as_ptr() as *mut Batch)
+    };
     if batch.batch_id != batch_id {
         msg!("Error: Wrong batch ID");
         return Err(PercolatorError::InvalidInstruction.into());
     }
     if batch.status != BatchStatus::Committing {
         msg!("Error: Batch not in committing phase");
+        return Err(PercolatorError::InvalidInstruction.into());
+    }
+    if batch.total_commitments as usize >= MAX_COMMITMENTS {
+        msg!("Error: Batch commitment capacity exceeded");
         return Err(PercolatorError::InvalidInstruction.into());
     }
 
@@ -166,6 +261,7 @@ pub fn process_commit_order(
         &mut *(commitment_account.borrow_mut_data_unchecked().as_ptr() as *mut Commitment)
     };
     commitment_data.initialize_in_place(batch_id, *user_account.key(), hash, deposit, salt);
+    batch.total_commitments = batch.total_commitments.saturating_add(1);
 
     msg!("CommitOrder: commitment stored, deposit locked");
     Ok(())
@@ -205,6 +301,28 @@ mod tests {
     use super::*;
     use crate::state::{Commitment, Registry};
     use pinocchio::pubkey::Pubkey;
+
+    #[test]
+    fn commitment_space_matches_commitment_layout() {
+        assert_eq!(COMMITMENT_SPACE, core::mem::size_of::<Commitment>());
+        assert_eq!(COMMITMENT_SPACE, 168);
+    }
+
+    #[test]
+    fn create_account_instruction_data_is_system_wire_format() {
+        let lamports = 456u64;
+        let mut ix_data = [0u8; 52];
+        ix_data[0..4].copy_from_slice(&0u32.to_le_bytes());
+        ix_data[4..12].copy_from_slice(&lamports.to_le_bytes());
+        ix_data[12..20].copy_from_slice(&(COMMITMENT_SPACE as u64).to_le_bytes());
+
+        assert_eq!(u32::from_le_bytes(ix_data[0..4].try_into().unwrap()), 0);
+        assert_eq!(u64::from_le_bytes(ix_data[4..12].try_into().unwrap()), lamports);
+        assert_eq!(
+            u64::from_le_bytes(ix_data[12..20].try_into().unwrap()),
+            COMMITMENT_SPACE as u64,
+        );
+    }
 
     #[test]
     fn test_deterministic_hash_different_inputs() {

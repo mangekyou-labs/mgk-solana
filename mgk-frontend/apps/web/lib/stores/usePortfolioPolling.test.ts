@@ -36,7 +36,7 @@ const { usePortfolioPolling, usePortfolioStore } = await import(
 const USER_PK = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 
 function makePortfolioBuffer(user: PublicKey, freeCollateral: bigint): Uint8Array {
-  const buf = new Uint8Array(1456);
+    const buf = new Uint8Array(1456);
   buf.set(user.toBytes(), 0);
   const view = new DataView(buf.buffer);
   const lo = freeCollateral & 0xffffffffffffffffn;

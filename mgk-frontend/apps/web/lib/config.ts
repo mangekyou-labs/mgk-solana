@@ -14,16 +14,18 @@ import { PublicKey, clusterApiUrl } from '@solana/web3.js';
 // `6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA` (was System Program
 // placeholder).
 //
-// 2026-06-20: perps-core ID changed from `DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar`
-// (ProgramData closed — cannot be redeployed or recreated) to fresh deploy
-// `CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5`. New keypair at
-// /tmp/perps-core-new.json. Update `.env.local` and rebuild any test vectors
-// that encode perps-core PDAs.
+// 2026-06-29: perps-core was fresh-deployed after closing CThnLgZ
+// because that account only held the stale 36-byte placeholder state.
+
 const DEVNET_DEFAULTS = {
-  rpcUrl: clusterApiUrl('devnet'),
-  coreProgramId: 'CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5',
+  rpcUrl: 'https://solana-devnet.infura.io/v3/0d6f71edfd764dae8eda71f95e3782ce',
+  coreProgramId: '3jYQ4mpWBBtwrzYQ4zzKhgqVcWWsG2HpXi9oXTBpekja',
   matcherProgramId: 'AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF',
   oracleProgramId: '6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA',
+  bookAddress: '5nfbjqTYpsnHnmCifdFpwLwajhyb8n6orVvbMbSrGT6w', // devnet matcher-owned keypair book (no InitializeBook instruction yet)
+  vaultAddress: '3FZS8JUn8FGz1CUroGYwrBVHqotaUquJMNnSuBCQxheT', // devnet core-owned keypair vault (Solana 4.x: PDA can't sign createAccount)
+  registryAddress: 'F7zWN2XrVqNDBBYqsYpgxHa6AuPK1aQE33kHwM4f8ayV', // devnet core-owned keypair registry (not PDA)
+  batchAddress: '', // current batch is keeper-created; prefer /api/batch/current unless explicitly overridden
   indexerUrl: 'http://localhost:4000',
   hermesUrl: 'https://hermes.pyth.network',
   // Pyth feed IDs (Hermes content-addressed, same across all networks)
@@ -60,6 +62,14 @@ const oracleProgramId = parsePkOrThrow(
   readEnv('NEXT_PUBLIC_ORACLE_PROGRAM_ID', DEVNET_DEFAULTS.oracleProgramId),
   'NEXT_PUBLIC_ORACLE_PROGRAM_ID',
 );
+const bookAddressRaw = readEnv('NEXT_PUBLIC_BOOK_ADDRESS', DEVNET_DEFAULTS.bookAddress ?? '');
+const bookAddress = bookAddressRaw ? parsePkOrThrow(bookAddressRaw, 'NEXT_PUBLIC_BOOK_ADDRESS') : null;
+const vaultAddressRaw = readEnv('NEXT_PUBLIC_VAULT_ADDRESS', DEVNET_DEFAULTS.vaultAddress ?? '');
+const vaultAddress = vaultAddressRaw ? parsePkOrThrow(vaultAddressRaw, 'NEXT_PUBLIC_VAULT_ADDRESS') : null;
+const registryAddressRaw = readEnv('NEXT_PUBLIC_REGISTRY_ADDRESS', DEVNET_DEFAULTS.registryAddress ?? '');
+const registryAddress = registryAddressRaw ? parsePkOrThrow(registryAddressRaw, 'NEXT_PUBLIC_REGISTRY_ADDRESS') : null;
+const batchAddressRaw = readEnv('NEXT_PUBLIC_BATCH_ADDRESS', DEVNET_DEFAULTS.batchAddress ?? '');
+const batchAddress = batchAddressRaw ? parsePkOrThrow(batchAddressRaw, 'NEXT_PUBLIC_BATCH_ADDRESS') : null;
 const indexerUrl = readEnv('NEXT_PUBLIC_INDEXER_URL', DEVNET_DEFAULTS.indexerUrl);
 const hermesUrl = readEnv('NEXT_PUBLIC_HERMES_URL', DEVNET_DEFAULTS.hermesUrl);
 
@@ -67,7 +77,11 @@ export const config = {
   rpcUrl,
   coreProgramId,
   matcherProgramId,
-  oracleProgramId,
+    oracleProgramId,
+  bookAddress,
+  vaultAddress,
+  registryAddress,
+  batchAddress,
   indexerUrl,
   hermesUrl,
   pythBtcFeedId: DEVNET_DEFAULTS.pythBtcFeedId,

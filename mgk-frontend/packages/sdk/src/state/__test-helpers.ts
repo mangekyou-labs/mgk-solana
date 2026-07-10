@@ -68,10 +68,10 @@ export function encodeCommitment(state: CommitmentState): Uint8Array {
   view.setBigUint64(136, r.qty, true);
   view.setBigUint64(144, r.salt, true);
   view.setUint16(152, r.instrumentId, true);
-  view.setUint32(154, r.commitmentIdx, true);
-  view.setUint8(158, r.orderType);
-  view.setUint8(159, r.side);
-  view.setUint8(160, r.reduceOnly ? 1 : 0);
+  view.setUint32(156, r.commitmentIdx, true);
+  view.setUint8(160, r.orderType);
+  view.setUint8(161, r.side);
+  view.setUint8(162, r.reduceOnly ? 1 : 0);
   return buf;
 }
 
@@ -97,7 +97,7 @@ export function encodePortfolio(state: PortfolioState): Uint8Array {
   }
   for (let i = 0; i < MAX_INSTRUMENTS; i++) {
     const v = state.lastFundingCheckpoint[i] ?? 0n;
-    writeI128(view, 920 + i * 16, v);
+        writeI128(view, 920 + i * 16, v);
   }
   view.setBigUint64(1432, state.lastBatchId, true);
   view.setBigUint64(1440, state.lastSlot, true);

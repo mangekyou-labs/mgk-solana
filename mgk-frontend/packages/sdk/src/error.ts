@@ -42,8 +42,18 @@ export const PercolatorError = {
   BelowMaintenanceMargin: 401,
   InvalidRiskParams: 402,
 
+  // Anti-toxicity (500-599) — G12: 503 is the reveal hash-mismatch error
+  // (the SDK docstring notes the rest of the range is "legacy, unused" but
+  // 503 InvalidCommitment is live in the perps-core program).
+  InvalidCommitment: 503,
+
   // Perps-core (600-699)
   RevealDeadlineExpired: 600,
+  OperationPaused: 602,
+
+  // Legacy range (100-199) — pre-strip router code that is still emitted
+  // by the perps-core program for portfolio-level margin checks.
+  PortfolioInsufficientMargin: 107,
 } as const;
 
 export type PercolatorError = (typeof PercolatorError)[keyof typeof PercolatorError];
@@ -92,12 +102,22 @@ const HUMAN_MESSAGES: Record<PercolatorError, string> = {
   // Perps-core
   [PercolatorError.RevealDeadlineExpired]:
     'The reveal deadline has passed. Place a new order for the next batch.',
+  [PercolatorError.OperationPaused]:
+    'Trading is temporarily paused. Try again in a few moments.',
+
+  // Anti-toxicity (G12)
+  [PercolatorError.InvalidCommitment]:
+    'The revealed order does not match the commitment. Your locked deposit has been slashed — place a new order for the next batch.',
+
+  // Legacy
+  [PercolatorError.PortfolioInsufficientMargin]:
+    'Your portfolio does not have enough free collateral for this order.',
 };
 
 const LEGACY_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [100, 199], // router (pre-strip)
+  [100, 199], // router (pre-strip) — 107 is live; we still treat the range as "legacy-looking" for unrecognized codes
   [200, 299], // slab (pre-strip)
-  [500, 599], // anti-toxicity (unused)
+  [500, 599], // anti-toxicity — 503 InvalidCommitment is live
 ];
 
 const LIVE_RANGE_NAMES: ReadonlyMap<number, string> = new Map([
@@ -143,4 +163,35 @@ export function humanizeError(code: number | bigint): string {
   }
 
   return `Unknown program error (${n}).`;
+}
+
+/** Error codes that slash the user's locked deposit / clear the in-flight
+ *  commit-reveal state. After these, the in-memory order form must be reset
+ *  and the user must place a new order in a fresh batch. */
+export const SLASHING_ERROR_CODES: ReadonlySet<number> = new Set<number>([
+  PercolatorError.RevealDeadlineExpired,
+  PercolatorError.InvalidCommitment,
+]);
+
+/** Error codes that suggest the user can retry by re-checking inputs
+ *  (e.g. price drifted, free collateral insufficient). NOT slashed — local
+ *  state must be preserved so the user can adjust and retry. */
+export const RETRYABLE_ERROR_CODES: ReadonlySet<number> = new Set<number>([
+  PercolatorError.InsufficientMargin,
+  PercolatorError.BelowMaintenanceMargin,
+  PercolatorError.PortfolioInsufficientMargin,
+  PercolatorError.InvalidOrderState,
+]);
+
+/** Error severity for UI routing decisions. */
+export type ErrorSeverity = 'slashed' | 'retryable' | 'fatal' | 'unknown';
+
+export function classifyError(code: number | bigint): ErrorSeverity {
+  const n = typeof code === 'bigint' ? Number(code) : code;
+  if (!Number.isInteger(n) || n < 0) return 'unknown';
+  if (SLASHING_ERROR_CODES.has(n)) return 'slashed';
+  if (RETRYABLE_ERROR_CODES.has(n)) return 'retryable';
+  if (n in HUMAN_MESSAGES) return 'fatal';
+  if (isLegacyCode(n)) return 'unknown';
+  return 'unknown';
 }

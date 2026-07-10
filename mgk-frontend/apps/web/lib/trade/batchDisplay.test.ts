@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { PublicKey } from '@solana/web3.js';
 import * as sdk from '@mgk/sdk';
 
 import {
   PHASE_LABEL,
   PHASE_TONE,
   deriveDeadline,
+  formatBatchCountdown,
   formatSlotDuration,
+  isPastActionDeadline,
   type DeadlineInfo,
 } from './batchDisplay';
 
@@ -31,6 +34,26 @@ function makeBatchData(
     totalVolume: 0n,
     totalNotional: 0n,
     slashedDeposits: 0n,
+    bump: 255,
+  };
+}
+
+function makeRegistryState(
+  overrides: Partial<{
+    nMin: number;
+  }> = {},
+): sdk.state.RegistryState {
+  return {
+    governance: PublicKey.default,
+    pauseFlags: 0,
+    batchIdCounter: 8n,
+    baseDeposit: 10_000_000n,
+    nMin: overrides.nMin ?? 1,
+    tMinSlots: 4n,
+    tMaxSlots: 400n,
+    tRevealSlots: 50n,
+    instrumentCount: 1,
+    volatilityMultiplier: 10_000,
     bump: 255,
   };
 }
@@ -125,5 +148,78 @@ describe('deriveDeadline', () => {
       null,
     );
     expect(d.isPastDeadline).toBe(false);
+  });
+});
+
+describe('formatBatchCountdown', () => {
+  it('shows accepting orders for Committing past deadline while below n_min', () => {
+    const batch = makeBatchData(sdk.state.BatchStatus.Committing, {
+      commitDeadlineSlot: 50_000n,
+    });
+    batch.totalCommitments = 0;
+
+    expect(
+      formatBatchCountdown(
+        sdk.state.BatchStatus.Committing,
+        batch,
+        50_100,
+        makeRegistryState({ nMin: 1 }),
+      ),
+    ).toBe('accepting orders');
+    expect(
+      isPastActionDeadline(
+        sdk.state.BatchStatus.Committing,
+        batch,
+        50_100,
+        makeRegistryState({ nMin: 1 }),
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps past deadline warning once Committing has met n_min', () => {
+    const batch = makeBatchData(sdk.state.BatchStatus.Committing, {
+      commitDeadlineSlot: 50_000n,
+    });
+    batch.totalCommitments = 1;
+
+    expect(
+      formatBatchCountdown(
+        sdk.state.BatchStatus.Committing,
+        batch,
+        50_100,
+        makeRegistryState({ nMin: 1 }),
+      ),
+    ).toBe('past deadline');
+    expect(
+      isPastActionDeadline(
+        sdk.state.BatchStatus.Committing,
+        batch,
+        50_100,
+        makeRegistryState({ nMin: 1 }),
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps past deadline warning for expired reveal windows', () => {
+    const batch = makeBatchData(sdk.state.BatchStatus.Revealing, {
+      revealDeadlineSlot: 50_000n,
+    });
+
+    expect(
+      formatBatchCountdown(
+        sdk.state.BatchStatus.Revealing,
+        batch,
+        50_100,
+        makeRegistryState({ nMin: 1 }),
+      ),
+    ).toBe('past deadline');
+    expect(
+      isPastActionDeadline(
+        sdk.state.BatchStatus.Revealing,
+        batch,
+        50_100,
+        makeRegistryState({ nMin: 1 }),
+      ),
+    ).toBe(true);
   });
 });

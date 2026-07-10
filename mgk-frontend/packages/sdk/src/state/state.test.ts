@@ -227,8 +227,54 @@ describe('decodePortfolio', () => {
     expect(decoded.health).toBe(7_750_000_000n);
   });
 
-  it('throws when buffer is too small', () => {
+    it('throws when buffer is too small', () => {
     expect(() => decodePortfolio(new Uint8Array(500))).toThrow(/too small/);
+  });
+
+  it('PORTFOLIO_SIZE matches BPF layout (1456 bytes, i128 8-byte aligned)', () => {
+    // On BPF (sbf-solana-solana), i128/u128 have 8-byte alignment (not 16
+    // like native macOS/aarch64). This means:
+    //   - No 8-byte padding before last_funding_checkpoint (starts at 920, not 928)
+    //   - No 8-byte trailing padding (total 1456, not 1472)
+    // The deployed program creates 1456-byte accounts. The SDK MUST match.
+    expect(PORTFOLIO_SIZE).toBe(1456);
+  });
+
+  it('decodes a BPF-layout portfolio (1456 bytes, i128 8-byte aligned)', () => {
+    // Manually construct a buffer matching the BPF repr(C) layout:
+    //   user(32) + equity(16) + principal(16) + pnl(16) + im(16) + mm(16)
+    //   + free_collateral(16) + health(16) + positions_len(2)
+    //   + 6 padding + positions(768) + last_funding_checkpoint(512)
+    //   + last_batch_id(8) + last_slot(8) + bump(1) + padding(7) = 1456
+    const buf = new Uint8Array(1456);
+    const view = new DataView(buf.buffer);
+    const user = new PublicKey(
+      'A6qbhK9mPRpFhX7D1kZsBpr2xNy8mfgU5J7Vu9xLE5Rp',
+    );
+    buf.set(user.toBytes(), 0);
+    // equity (i128) at offset 32
+    view.setBigUint64(32, 10_000_000_000n, true);
+    view.setBigInt64(40, 0n, true);
+    // positions_len (u16) at offset 144
+    view.setUint16(144, 0, true);
+    // last_funding_checkpoint[0] (i128) at offset 920 (BPF: no 16-byte align pad)
+    view.setBigUint64(920, 42n, true);
+    view.setBigInt64(928, 0n, true);
+    // last_batch_id (u64) at offset 1432
+    view.setBigUint64(1432, 99n, true);
+    // last_slot (u64) at offset 1440
+    view.setBigUint64(1440, 888n, true);
+    // bump (u8) at offset 1448
+    view.setUint8(1448, 255);
+
+    const decoded = decodePortfolio(buf);
+    expect(decoded.user.toBase58()).toBe(user.toBase58());
+    expect(decoded.equity).toBe(10_000_000_000n);
+    expect(decoded.positionsLen).toBe(0);
+    expect(decoded.lastFundingCheckpoint[0]).toBe(42n);
+    expect(decoded.lastBatchId).toBe(99n);
+    expect(decoded.lastSlot).toBe(888n);
+    expect(decoded.bump).toBe(255);
   });
 });
 

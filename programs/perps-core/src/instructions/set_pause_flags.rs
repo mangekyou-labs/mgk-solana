@@ -85,9 +85,12 @@ mod tests {
         let snap_batch_id_counter = r.batch_id_counter;
         let snap_base_deposit = r.base_deposit;
         r.set_pause_flags(PAUSE_TRADING | PAUSE_LIQUIDATIONS);
-        assert_eq!(r.instrument_count, snap_instrument_count);
-        assert_eq!(r.batch_id_counter, snap_batch_id_counter);
-        assert_eq!(r.base_deposit, snap_base_deposit);
+        let instrument_count = r.instrument_count;
+        let batch_id_counter = r.batch_id_counter;
+        let base_deposit = r.base_deposit;
+        assert_eq!(instrument_count, snap_instrument_count);
+        assert_eq!(batch_id_counter, snap_batch_id_counter);
+        assert_eq!(base_deposit, snap_base_deposit);
         assert!(r.is_trading_paused());
         assert!(r.is_liquidations_paused());
     }

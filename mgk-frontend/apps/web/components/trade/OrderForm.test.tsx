@@ -8,6 +8,8 @@ vi.mock('@/components/wallet/useAutoConnect', () => ({
   useAutoConnect: () => ({ connected: true }),
 }));
 
+import { useOrderFormStore } from '@/lib/stores/useOrderFormStore';
+
 describe('OrderForm', () => {
   it('renders the side tabs (Buy/Long active by default)', () => {
     render(<OrderForm bestBid={null} bestAsk={null} />);
@@ -225,5 +227,43 @@ describe('OrderForm', () => {
   it('renders the risk panel below the summary', () => {
     render(<OrderForm bestBid={null} bestAsk={null} />);
     expect(screen.getByTestId('order-form-risk-panel')).toBeInTheDocument();
+  });
+
+  describe('G12 — slashed banner', () => {
+    afterEach(() => {
+      // Reset to idle so the next test isn't affected
+      useOrderFormStore.setState({
+        status: 'idle',
+        salt: 0n,
+        hash: '',
+      });
+    });
+
+    it('is hidden when status is idle', () => {
+      render(<OrderForm bestBid={null} bestAsk={null} />);
+      expect(screen.queryByTestId('order-form-slashed-banner')).toBeNull();
+    });
+
+    it('renders the banner with the slashed title when status is slashed', () => {
+      useOrderFormStore.setState({ status: 'slashed', hash: '0xdead', salt: 1n });
+      render(<OrderForm bestBid={null} bestAsk={null} />);
+      const banner = screen.getByTestId('order-form-slashed-banner');
+      expect(banner).toBeInTheDocument();
+      expect(banner.getAttribute('data-slashed')).toBe('true');
+      expect(screen.getByTestId('order-form-slashed-title')).toHaveTextContent('slashed');
+    });
+
+    it('shows a "Start fresh" button that clears the store', () => {
+      useOrderFormStore.setState({ status: 'slashed', hash: '0xdead', salt: 1n });
+      render(<OrderForm bestBid={null} bestAsk={null} />);
+      fireEvent.click(screen.getByTestId('order-form-slashed-dismiss'));
+      expect(useOrderFormStore.getState().status).toBe('idle');
+    });
+
+    it('is NOT shown for transient failure states', () => {
+      useOrderFormStore.setState({ status: 'failed', hash: '0xdead', salt: 1n });
+      render(<OrderForm bestBid={null} bestAsk={null} />);
+      expect(screen.queryByTestId('order-form-slashed-banner')).toBeNull();
+    });
   });
 });

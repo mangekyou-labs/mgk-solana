@@ -1,4 +1,3 @@
-use crate::pda::derive_batch_pda;
 use crate::state::batch::{Batch, BatchStatus, Commitment, CommitmentStatus};
 use crate::state::funding::{
     accrue_cum_funding, compute_funding_rate, compute_premium_sample, compute_premium_sma,
@@ -206,7 +205,7 @@ fn apply_funding_to_portfolio(
 
 #[allow(clippy::too_many_arguments)]
 pub fn process_settle_batch(
-    program_id: &Pubkey,
+    _program_id: &Pubkey,
     batch_account: &AccountInfo,
     registry_account: &AccountInfo,
     vault_account: &AccountInfo,
@@ -487,8 +486,8 @@ pub fn process_settle_batch(
         matcher_program.key(),
         instrument.instrument_id,
     );
-    if book_account.key() != &expected_book_pda {
-        msg!("Error: book_account PDA does not match expected derivation");
+    if book_account.key() != &expected_book_pda && book_account.owner() != matcher_program.key() {
+        msg!("Error: book_account is neither expected PDA nor matcher-owned");
         return Err(PercolatorError::InvalidAccount.into());
     }
 
@@ -502,6 +501,10 @@ pub fn process_settle_batch(
                 as *const OrderBook,
         )
     };
+    if book.instrument_id != instrument.instrument_id {
+        msg!("Error: book instrument_id does not match instrument");
+        return Err(PercolatorError::InvalidAccount.into());
+    }
 
     // 3. Read the oracle price (raw bytes — see `ORACLE_PRICE_OFFSET`).
     //    If the magic bytes don't match or the oracle is shorter than
@@ -582,14 +585,12 @@ pub fn process_settle_batch(
     // the current batch, write the next batch's PDA in place so there is
     // no idle gap where no batch is in Committing.
     //
-    // 1. Derive the expected PDA from the current batch_id + 1 and verify
-    //    the caller passed the right account.
-    let (expected_next_pda, next_bump) =
-        derive_batch_pda(batch.batch_id.saturating_add(1), program_id);
-    if next_batch_account.key() != &expected_next_pda {
-        msg!("Error: next_batch PDA does not match expected derivation");
-        return Err(PercolatorError::InvalidAccount.into());
-    }
+    // NOTE: PDA validation removed — Solana 4.x breaks createAccount for PDA
+    // addresses (new accounts must sign their own Allocate). Batch is now
+    // created by keeper via Keypair.generate() + createAccount, not via PDA.
+    // The bump value is stored as metadata only (no invoke_signed signing).
+    let next_batch_id = batch.batch_id.saturating_add(1);
+    let next_bump: u8 = 0; // bump unused when batch is keypair-controlled
 
     // 2. Defensive size check — the caller must pre-allocate the account
     //    at exactly size_of::<Batch>(). The PDA was created via system
@@ -626,7 +627,7 @@ pub fn process_settle_batch(
     // clearing_price, all counters default to 0 — the fresh state of a
     // brand-new batch in Committing.
     next_batch.initialize_in_place(
-        batch.batch_id.saturating_add(1),
+        next_batch_id,
         commit_deadline,
         0,
         next_bump,
@@ -747,11 +748,6 @@ mod tests {
 
     use crate::state::BatchStatus;
 
-    /// A representative non-zero PDA bump — in production this is whatever
-    /// `find_program_address` returns; the exact value is irrelevant to
-    /// the post-condition tests below.
-    const FAKE_BUMP: u8 = 254;
-
     /// The new batch's batch_id must be the current batch's batch_id + 1,
     /// status must be Committing, commit_deadline_slot must be
     /// `current_slot + t_max_slots`, and reveal_deadline_slot/close_slot/
@@ -764,13 +760,13 @@ mod tests {
 
         let mut next_batch = Batch::new(0);
         // Simulate the write — mirrors the in-place call in
-        // process_settle_batch (no PDA derivation; the actual bump is
-        // produced on-chain).
+        // process_settle_batch. Batches are keypair-controlled in the
+        // current devnet path, so no PDA bump is stored.
         next_batch.initialize_in_place(
             current_batch_id + 1,
             current_slot.saturating_add(t_max_slots),
             0,
-            FAKE_BUMP,
+            0,
         );
 
         assert_eq!(next_batch.batch_id, 6, "batch_id = current + 1");
@@ -798,9 +794,8 @@ mod tests {
         assert_eq!(next_batch.total_notional, 0, "total_notional is 0");
         assert_eq!(next_batch.slashed_deposits, 0, "slashed_deposits is 0");
         assert_eq!(
-            next_batch.bump, FAKE_BUMP,
-            "bump must be the (on-chain derived) PDA bump — we hardcode \
-             the value here because the derivation syscall is BPF-only"
+            next_batch.bump, 0,
+            "bump is always 0 when batch is keypair-controlled (no PDA derivation)"
         );
     }
 

@@ -259,6 +259,29 @@ describe('useBookStore', () => {
     expect(conn2.calls.length).toBeGreaterThan(calls1);
   });
 
+    it('uses an explicit bookAddress override instead of deriving the PDA', async () => {
+    const customBook = new PublicKey('5nfbjqTYpsnHnmCifdFpwLwajhyb8n6orVvbMbSrGT6w');
+    const conn = new MockConnection();
+    conn.responses = [
+      makeAccountInfo(
+        makeBookBuffer(
+          [{ price: 150_000n, totalQty: 100n, orderCount: 1 }],
+          [],
+          { instrumentId: 0, bestBid: 150_000n },
+        ),
+      ),
+    ];
+
+    await useBookStore.getState().startPolling(
+      buildParams(conn as unknown as Connection, { bookAddress: customBook }),
+    );
+
+    // Should fetch from the override address, not the derived PDA
+    expect(conn.calls[0][0]).toEqual(customBook);
+    expect(useBookStore.getState().data?.bidCount).toBe(1);
+    expect(useBookStore.getState().data?.bestBid).toBe(150_000n);
+  });
+
   it('refresh is a no-op when no polling is active', async () => {
     const conn = new MockConnection();
     await useBookStore.getState().refresh();

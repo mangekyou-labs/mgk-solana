@@ -5,6 +5,7 @@ import { useCallback, useState } from 'react';
 import * as sdk from '@mgk/sdk';
 import { NumberDisplay } from '@/components/common/NumberDisplay';
 import { AccountActions } from '@/components/orderform/AccountActions';
+import { useOrderFormStore } from '@/lib/stores/useOrderFormStore';
 import { MarginModeTabs, type MarginMode } from './MarginModeTabs';
 import { OrderTypeTabs, type OrderMode } from './OrderTypeTabs';
 import { RiskPanel } from './RiskPanel';
@@ -68,6 +69,8 @@ export function OrderForm({
   const [priceInput, setPriceInput] = useState('');
   const [qtyInput, setQtyInput] = useState('');
   const [reduceOnly, setReduceOnly] = useState(false);
+  const orderStatus = useOrderFormStore((s) => s.status);
+  const clearOrder = useOrderFormStore((s) => s.clear);
 
   const lotSize = 1000000n;
 
@@ -152,6 +155,10 @@ export function OrderForm({
       <MarginModeTabs mode={marginMode} />
       <OrderTypeTabs mode={orderMode} />
       <SideTabs side={side} onSelect={selectSide} />
+
+      {orderStatus === 'slashed' && (
+        <SlashedBanner onDismiss={clearOrder} />
+      )}
 
       <div className="flex flex-col gap-1 text-text-muted text-[10px] uppercase tracking-wider">
         <PriceInput
@@ -456,6 +463,48 @@ function SummaryRow({
         {prefix}
         {value}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Banner shown when the order form is in `slashed` status — the user's
+ * in-flight commit-reveal was either revealed too late (the batch closed)
+ * or revealed with a hash mismatch, and the protocol kept the locked
+ * deposit. The user must place a new order; clicking "Start fresh" clears
+ * the in-memory + localStorage state so the form is usable again.
+ */
+function SlashedBanner({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <div
+      data-testid="order-form-slashed-banner"
+      data-slashed="true"
+      className="flex flex-col gap-1 rounded border border-bear/60 bg-bear/10 px-2 py-1.5 text-text"
+    >
+      <div className="flex items-center justify-between">
+        <span
+          data-testid="order-form-slashed-title"
+          className="text-bear text-[11px] font-medium uppercase tracking-wider"
+        >
+          Order slashed
+        </span>
+        <button
+          type="button"
+          data-testid="order-form-slashed-dismiss"
+          onClick={onDismiss}
+          className="text-text-muted text-[10px] uppercase tracking-wider hover:text-text"
+        >
+          Start fresh
+        </button>
+      </div>
+      <p
+        data-testid="order-form-slashed-message"
+        className="text-text-muted text-[10px] leading-snug"
+      >
+        The reveal deadline passed or the revealed order did not match
+        the commitment. Your locked deposit has been kept by the protocol.
+        Place a new order in the next batch.
+      </p>
     </div>
   );
 }

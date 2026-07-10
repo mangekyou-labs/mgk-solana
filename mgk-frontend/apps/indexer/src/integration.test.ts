@@ -1,5 +1,7 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import Fastify from 'fastify';
+import { Keypair, PublicKey, type AccountInfo, type Connection } from '@solana/web3.js';
+import * as sdk from '@mgk/sdk';
 import { createStore } from './store.js';
 import { aggregateCandles } from './aggregator.js';
 import {
@@ -8,12 +10,53 @@ import {
   tradesRoutes,
   bookRoutes,
   batchRoutes,
+  userFillsRoutes,
 } from './rest/routes.js';
 import { healthRoutes } from './rest/health.js';
 
 const TX_SIG = Buffer.from('test-tx-signature-001', 'utf-8');
 const MAKER = new Uint8Array(32).fill(0xaa);
 const TAKER = new Uint8Array(32).fill(0xbb);
+const TAKER_B58 = 'DdqGmK5uamYN5vmuZrzpQhKeehLdwtPLVJdhu5P2iJKC';
+const MAKER_B58 = 'CVDFLCAjXhVWiPXH9nTCTpCgVzmDVoiPzNJYuccr1dqB';
+
+function makeRegistryBuffer(batchIdCounter: bigint): Uint8Array {
+  const buf = new Uint8Array(sdk.state.REGISTRY_SIZE);
+  const view = new DataView(buf.buffer);
+  view.setUint16(32, 1, true);
+  view.setUint16(34, 10_000, true);
+  view.setBigUint64(36, batchIdCounter, true);
+  view.setBigUint64(44, 10_000_000n, true);
+  view.setUint32(52, 1, true);
+  view.setBigUint64(56, 4n, true);
+  view.setBigUint64(64, 400n, true);
+  view.setBigUint64(72, 50n, true);
+  view.setUint8(80, 0);
+  return buf;
+}
+
+function makeBatchBuffer(batchId: bigint): Uint8Array {
+  const buf = new Uint8Array(sdk.state.BATCH_SIZE);
+  const view = new DataView(buf.buffer);
+  view.setBigUint64(0, batchId, true);
+  view.setUint8(8, sdk.state.BatchStatus.Committing);
+  view.setBigUint64(16, 100n, true);
+  view.setBigUint64(24, 200n, true);
+  view.setBigUint64(32, 250n, true);
+  view.setBigUint64(40, 300n, true);
+  view.setBigInt64(48, 150_000_000n, true);
+  return buf;
+}
+
+function makeAccountInfo(data: Uint8Array): AccountInfo<Buffer> {
+  return {
+    data: Buffer.from(data),
+    executable: false,
+    lamports: 1_000_000,
+    owner: Keypair.generate().publicKey,
+    rentEpoch: 0,
+  };
+}
 
 describe('indexer integration', () => {
   const store = createStore(':memory:');
@@ -28,6 +71,7 @@ describe('indexer integration', () => {
     await app.register(tradesRoutes, store);
     await app.register(bookRoutes, store);
     await app.register(batchRoutes, store);
+    await app.register(userFillsRoutes, store);
     await app.ready();
   });
 
@@ -59,6 +103,53 @@ describe('indexer integration', () => {
     expect(body.batch_id).toBe(2);
     expect(body.phase).toBe(0);
     expect(body.num_commitments).toBe(22);
+  });
+
+  it('GET /api/batch/current ignores a stale persisted keypair and scans for the active batch', async () => {
+    const liveStore = createStore(':memory:');
+    const liveApp = Fastify({ logger: false });
+    const coreProgramId = Keypair.generate().publicKey;
+    const registryAddress = Keypair.generate().publicKey;
+    const staleBatchAddress = Keypair.generate().publicKey;
+    const activeBatchAddress = Keypair.generate().publicKey;
+
+    const connection = {
+      async getAccountInfo(address: PublicKey) {
+        if (address.equals(registryAddress)) return makeAccountInfo(makeRegistryBuffer(5n));
+        if (address.equals(staleBatchAddress)) return makeAccountInfo(makeBatchBuffer(3n));
+        return null;
+      },
+      async getProgramAccounts() {
+        return [
+          {
+            pubkey: activeBatchAddress,
+            account: makeAccountInfo(makeBatchBuffer(4n)),
+          },
+        ];
+      },
+    } as unknown as Connection;
+
+    await liveApp.register(async (instance) => {
+      await batchRoutes(instance, liveStore, {
+        connection,
+        coreProgramId: coreProgramId.toBase58(),
+        registryAddress: registryAddress.toBase58(),
+        getCurrentBatchAddress: () => staleBatchAddress.toBase58(),
+      });
+    });
+    await liveApp.ready();
+
+    try {
+      const res = await liveApp.inject({ method: 'GET', url: '/api/batch/current' });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.batchId).toBe('4');
+      expect(body.batchAddress).toBe(activeBatchAddress.toBase58());
+      expect(body.batch_id_counter).toBe('5');
+    } finally {
+      await liveApp.close();
+      liveStore.close();
+    }
   });
 
   // ── markets ══════════════════════════════════════════════════════
@@ -358,5 +449,116 @@ describe('indexer integration', () => {
 
     await emptyApp.close();
     empty.close();
+  });
+
+  // ── user fills (G6) ════════════════════════════════════════════
+
+  describe('GET /api/users/:pubkey/fills', () => {
+    const setup = createStore(':memory:');
+    let setupApp: ReturnType<typeof Fastify>;
+
+    beforeAll(async () => {
+      setupApp = Fastify({ logger: false });
+      await setupApp.register(userFillsRoutes, setup);
+      await setupApp.ready();
+
+      // Two fills where MAKER is the user, two where TAKER is the user, plus
+      // one fill between two unrelated pubkeys (should not appear).
+      setup.insertFill.run([1001, 1, 0, 0, 150_400_000, 5_000_000, TAKER, MAKER, TX_SIG, 0]);
+      setup.insertFill.run([1002, 1, 0, 1, 151_000_000, 3_000_000, TAKER, MAKER, TX_SIG, 1]);
+      setup.insertFill.run([1003, 1, 0, 0, 150_500_000, 2_000_000, MAKER, TAKER, TX_SIG, 0]);
+      setup.insertFill.run([1004, 1, 0, 1, 150_600_000, 1_000_000, MAKER, TAKER, TX_SIG, 1]);
+
+      const OTHER_A = new Uint8Array(32).fill(0x11);
+      const OTHER_B = new Uint8Array(32).fill(0x22);
+      setup.insertFill.run([1005, 1, 0, 0, 150_700_000, 9_000_000, OTHER_A, OTHER_B, TX_SIG, 0]);
+    });
+
+    afterAll(async () => {
+      await setupApp.close();
+      setup.close();
+    });
+
+    it('returns 400 for an invalid pubkey', async () => {
+      const res = await setupApp.inject({
+        method: 'GET',
+        url: '/api/users/not-a-pubkey/fills',
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("returns the user's fills as taker", async () => {
+      const res = await setupApp.inject({
+        method: 'GET',
+        url: `/api/users/${TAKER_B58}/fills`,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.fills.length).toBe(4);
+      // Sorted by slot DESC
+      const slots = body.fills.map((f: { slot: number }) => f.slot);
+      expect(slots).toEqual([1004, 1003, 1002, 1001]);
+    });
+
+    it("returns the user's fills as maker (same set; role flipped)", async () => {
+      const res = await setupApp.inject({
+        method: 'GET',
+        url: `/api/users/${MAKER_B58}/fills`,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.fills.length).toBe(4);
+      // The first fill (1001) is maker=MAKER (in our seed: taker=TAKER, maker=MAKER),
+      // so its role should be 'maker'. Slot 1004 is taker=MAKER → 'taker'.
+      const bySlot = new Map<number, { role: string }>(
+        body.fills.map((f: { slot: number; role: string }) => [f.slot, f]),
+      );
+      expect(bySlot.get(1004)?.role).toBe('taker');
+      expect(bySlot.get(1001)?.role).toBe('maker');
+    });
+
+    it('does not return fills where the user is neither taker nor maker', async () => {
+      const res = await setupApp.inject({
+        method: 'GET',
+        url: `/api/users/${TAKER_B58}/fills`,
+      });
+      const body = JSON.parse(res.body);
+      const slots = body.fills.map((f: { slot: number }) => f.slot);
+      expect(slots).not.toContain(1005);
+    });
+
+    it('respects the limit query parameter', async () => {
+      const res = await setupApp.inject({
+        method: 'GET',
+        url: `/api/users/${TAKER_B58}/fills?limit=2`,
+      });
+      const body = JSON.parse(res.body);
+      expect(body.fills.length).toBe(2);
+    });
+
+    it('exposes ts_estimate (slot * 400ms)', async () => {
+      const res = await setupApp.inject({
+        method: 'GET',
+        url: `/api/users/${TAKER_B58}/fills`,
+      });
+      const body = JSON.parse(res.body);
+      const first = body.fills[0] as { slot: number; ts_estimate: number };
+      expect(first.ts_estimate).toBe(first.slot * 400);
+    });
+
+    it('filters by instrumentId when provided', async () => {
+      // Insert a fill on instrument 1; should not show up under instrument 0
+      const OTHER_A = new Uint8Array(32).fill(0x11);
+      const OTHER_B = new Uint8Array(32).fill(0x22);
+      setup.insertFill.run([2000, 2, 1, 0, 200_000_000, 4_000_000, OTHER_A, OTHER_B, TX_SIG, 0]);
+
+      const res = await setupApp.inject({
+        method: 'GET',
+        url: `/api/users/${TAKER_B58}/fills?instrumentId=0`,
+      });
+      const body = JSON.parse(res.body);
+      const ids = body.fills.map((f: { instrument_id: number }) => f.instrument_id);
+      expect(ids.every((id: number) => id === 0)).toBe(true);
+    });
   });
 });

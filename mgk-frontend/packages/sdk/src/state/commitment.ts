@@ -25,10 +25,10 @@ export function decodeRevealedOrder(
     qty: view.getBigUint64(baseOffset + 40, true),
     salt: view.getBigUint64(baseOffset + 48, true),
     instrumentId: view.getUint16(baseOffset + 56, true),
-    commitmentIdx: view.getUint32(baseOffset + 58, true),
-    orderType: view.getUint8(baseOffset + 62) as OrderType,
-    side: view.getUint8(baseOffset + 63) as Side,
-    reduceOnly: view.getUint8(baseOffset + 64) !== 0,
+    commitmentIdx: view.getUint32(baseOffset + 60, true),
+    orderType: view.getUint8(baseOffset + 64) as OrderType,
+    side: view.getUint8(baseOffset + 65) as Side,
+    reduceOnly: view.getUint8(baseOffset + 66) !== 0,
   };
 }
 

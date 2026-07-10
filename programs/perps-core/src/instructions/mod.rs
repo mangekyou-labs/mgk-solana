@@ -4,8 +4,12 @@ pub mod cancel_resting_order;
 pub mod clear_batch;
 pub mod close_committing;
 pub mod commit_order;
+pub mod create_batch;
+pub mod create_portfolio;
 pub mod deposit;
 pub mod init_portfolio;
+pub mod init_portfolio_for_user;
+pub mod init_vault;
 pub mod initialize;
 pub mod liquidate_user;
 pub mod modify_resting_order;
@@ -20,8 +24,12 @@ pub use cancel_resting_order::*;
 pub use clear_batch::*;
 pub use close_committing::*;
 pub use commit_order::*;
+pub use create_batch::*;
+pub use create_portfolio::*;
 pub use deposit::*;
 pub use init_portfolio::*;
+pub use init_portfolio_for_user::*;
+pub use init_vault::*;
 pub use initialize::*;
 pub use liquidate_user::*;
 pub use modify_resting_order::*;
@@ -51,4 +59,23 @@ pub enum CoreInstruction {
     CancelAllRestingOrders = 13,
     /// M7 7.8: governance-only pause-flag setter.
     SetPauseFlags = 14,
+    /// Initialize the Vault account (disc 15). Vault must be pre-created
+    /// via SystemProgram.createAccount (keypair signs on Solana 4.x).
+    InitVault = 15,
+    /// Create the first batch in Committing state (disc 16). Used to
+    /// bootstrap the batch lifecycle when batch_id_counter == 0.
+    CreateBatch = 16,
+    /// Reset `batch_id_counter` to 0 so CreateBatch can bootstrap the
+    /// first batch. Governance-only. Needed when counter drifted after
+    /// failed init runs.
+    SetBatchCounter = 17,
+    /// Create and initialize a Portfolio PDA for a user (disc 18).
+    /// Atomic create via invoke_signed — browser wallets can call this
+    /// directly without pre-creating the portfolio account.
+    CreatePortfolio = 18,
+    /// InitPortfolioForUser (disc 19) — keeper creates + initializes a
+    /// Portfolio PDA for a user via SystemProgram.createAccount (keeper
+    /// signs). Browser wallet then calls InitPortfolio (disc 1) on the
+    /// pre-created account (idempotent, skips if already initialized).
+    InitPortfolioForUser = 19,
 }

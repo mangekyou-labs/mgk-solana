@@ -8,10 +8,10 @@ import {
 } from './usePortfolioStore';
 
 const USER_PK = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
-const CORE_PK = new PublicKey('CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5');
+const CORE_PK = new PublicKey('J5fVjwm96cQxcSqUz4QAmRBT75x7aN9NgG4xcnMmcfSv');
 
 function makePortfolioBuffer(user: PublicKey, freeCollateral: bigint): Uint8Array {
-  const buf = new Uint8Array(1456);
+    const buf = new Uint8Array(1456);
   buf.set(user.toBytes(), 0);
   const view = new DataView(buf.buffer);
   const lo = freeCollateral & 0xffffffffffffffffn;

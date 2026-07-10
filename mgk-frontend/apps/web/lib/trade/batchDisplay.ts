@@ -41,6 +41,18 @@ export function formatSlotDuration(slotsRemaining: number): string {
     .join(':');
 }
 
+export function isCommitAcceptingAfterDeadline(
+  status: sdk.state.BatchStatus,
+  data: sdk.state.BatchState,
+  registry?: sdk.state.RegistryState | null,
+): boolean {
+  return (
+    status === sdk.state.BatchStatus.Committing &&
+    registry != null &&
+    data.totalCommitments < registry.nMin
+  );
+}
+
 export interface DeadlineInfo {
   deadline: bigint | null;
   isPastDeadline: boolean;
@@ -84,4 +96,30 @@ export function deriveDeadline(
     case sdk.state.BatchStatus.Settled:
       return { deadline: null, isPastDeadline: false, deadlineLabel: '' };
   }
+}
+
+export function formatBatchCountdown(
+  status: sdk.state.BatchStatus,
+  data: sdk.state.BatchState,
+  currentSlot: number | null,
+  registry?: sdk.state.RegistryState | null,
+): string {
+  const { deadline } = deriveDeadline(status, data, currentSlot);
+  if (deadline == null || currentSlot == null) return '—';
+  const slotsRemaining = Number(deadline) - currentSlot;
+  if (slotsRemaining <= 0 && isCommitAcceptingAfterDeadline(status, data, registry)) {
+    return 'accepting orders';
+  }
+  return formatSlotDuration(slotsRemaining);
+}
+
+export function isPastActionDeadline(
+  status: sdk.state.BatchStatus,
+  data: sdk.state.BatchState,
+  currentSlot: number | null,
+  registry?: sdk.state.RegistryState | null,
+): boolean {
+  const { isPastDeadline } = deriveDeadline(status, data, currentSlot);
+  if (!isPastDeadline) return false;
+  return !isCommitAcceptingAfterDeadline(status, data, registry);
 }

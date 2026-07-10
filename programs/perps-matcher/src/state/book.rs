@@ -48,12 +48,42 @@ pub struct BookState {
     pub resting_count: usize,
 }
 
+/// Zero a BookState in-place. BPF-safe: does not allocate a new struct on
+/// the caller's frame. Use this instead of `BookState::new()` in BPF entry
+/// points that already have a borrowed buffer.
+impl BookState {
+    pub fn zeroed_in_place(&mut self) {
+        // Zero the book header.
+        self.book.instrument_id = 0;
+        self.book.best_bid = 0;
+        self.book.best_ask = 0;
+        self.book.bid_count = 0;
+        self.book.ask_count = 0;
+        self.book.next_order_id = 0;
+        self.book.last_update_slot = 0;
+        for lvl in self.book.bids.iter_mut() {
+            *lvl = BookLevel::default();
+        }
+        for lvl in self.book.asks.iter_mut() {
+            *lvl = BookLevel::default();
+        }
+        // Zero the resting array.
+        // SAFETY: we own this field; zeroing in place is well-defined.
+        for r in self.resting.iter_mut() {
+            *r = RestingOrder::default();
+        }
+        self.resting_count = 0;
+    }
+}
+
+#[cfg(not(target_os = "solana"))]
 impl Default for BookState {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 impl BookState {
     pub fn new() -> Self {
         Self {
@@ -72,7 +102,9 @@ impl BookState {
             resting_count: 0,
         }
     }
+}
 
+impl BookState {
     pub fn is_full(&self) -> bool {
         self.resting_count >= MAX_RESTING_ORDERS
     }
@@ -542,6 +574,29 @@ pub fn serialize_book_state(state: &BookState, buf: &mut [u8]) -> Result<(), Boo
 
 /// Read a `BookState` from `buf`. The buffer must be exactly
 /// `book_account_size()` bytes (or larger — extras are ignored).
+///
+/// Returns a **borrowed** `&mut BookState` into the buffer. No struct copy.
+/// BPF entry points use this to avoid the 27 KB `BookState::new()` stack frame.
+pub fn book_state_from_bytes_mut(buf: &mut [u8]) -> Result<&mut BookState, BookError> {
+    let size = book_account_size();
+    if buf.len() < size {
+        return Err(BookError::BufferTooShort);
+    }
+    if (buf.as_ptr() as usize) % 8 != 0 {
+        return Err(BookError::BadAlignment);
+    }
+    // SAFETY:
+    // - buf is at least `size` bytes (checked above).
+    // - The returned &mut BookState borrows buf for the caller's lifetime,
+    //   which is valid because the caller owns buf.
+    // - `BookState` is `#[repr(C)]` with no interior mutability.
+    let state = unsafe {
+        &mut *(buf.as_mut_ptr() as *mut BookState)
+    };
+    Ok(state)
+}
+
+#[cfg(not(target_os = "solana"))]
 pub fn deserialize_book_state(buf: &[u8]) -> Result<BookState, BookError> {
     let size = book_account_size();
     if buf.len() < size {

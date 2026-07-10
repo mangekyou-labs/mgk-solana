@@ -1,10 +1,13 @@
 import { PublicKey } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const CORE_DEVNET = 'CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5';
+const CORE_DEVNET = '3jYQ4mpWBBtwrzYQ4zzKhgqVcWWsG2HpXi9oXTBpekja';
 const MATCHER_DEVNET = 'AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF';
 const ORACLE_DEVNET = '6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA';
 const SYSTEM_PROGRAM = '11111111111111111111111111111111';
+const BOOK_DEVNET = '5nfbjqTYpsnHnmCifdFpwLwajhyb8n6orVvbMbSrGT6w';
+const VAULT_DEVNET = '3FZS8JUn8FGz1CUroGYwrBVHqotaUquJMNnSuBCQxheT';
+const REGISTRY_DEVNET = 'F7zWN2XrVqNDBBYqsYpgxHa6AuPK1aQE33kHwM4f8ayV';
 
 describe('config', () => {
   beforeEach(() => {
@@ -29,6 +32,60 @@ describe('config', () => {
     expect(config.coreProgramId).toBeInstanceOf(PublicKey);
     expect(config.matcherProgramId).toBeInstanceOf(PublicKey);
     expect(config.oracleProgramId).toBeInstanceOf(PublicKey);
+  });
+
+  it('defaults bookAddress to the devnet keypair book address', async () => {
+    const { config } = await import('./config');
+    expect(config.bookAddress).toBeInstanceOf(PublicKey);
+    expect(config.bookAddress!.toBase58()).toBe(BOOK_DEVNET);
+  });
+
+  it('reads NEXT_PUBLIC_BOOK_ADDRESS override as a PublicKey', async () => {
+    vi.stubEnv('NEXT_PUBLIC_BOOK_ADDRESS', SYSTEM_PROGRAM);
+    const { config } = await import('./config');
+    expect(config.bookAddress).toBeInstanceOf(PublicKey);
+    expect(config.bookAddress!.toBase58()).toBe(SYSTEM_PROGRAM);
+  });
+
+  it('treats an empty NEXT_PUBLIC_BOOK_ADDRESS as unset (falls back to default)', async () => {
+    vi.stubEnv('NEXT_PUBLIC_BOOK_ADDRESS', '');
+    const { config } = await import('./config');
+    expect(config.bookAddress!.toBase58()).toBe(BOOK_DEVNET);
+  });
+
+  it('defaults vaultAddress to the devnet keypair vault address', async () => {
+    const { config } = await import('./config');
+    expect(config.vaultAddress).toBeInstanceOf(PublicKey);
+    expect(config.vaultAddress!.toBase58()).toBe(VAULT_DEVNET);
+  });
+
+  it('defaults registryAddress to the devnet keypair registry address', async () => {
+    const { config } = await import('./config');
+    expect(config.registryAddress).toBeInstanceOf(PublicKey);
+    expect(config.registryAddress!.toBase58()).toBe(REGISTRY_DEVNET);
+  });
+
+  it('defaults batchAddress to null because keeper rotates keypair batches', async () => {
+    const { config } = await import('./config');
+    expect(config.batchAddress).toBeNull();
+  });
+
+  it('reads NEXT_PUBLIC_VAULT_ADDRESS override as a PublicKey', async () => {
+    vi.stubEnv('NEXT_PUBLIC_VAULT_ADDRESS', SYSTEM_PROGRAM);
+    const { config } = await import('./config');
+    expect(config.vaultAddress!.toBase58()).toBe(SYSTEM_PROGRAM);
+  });
+
+  it('reads NEXT_PUBLIC_REGISTRY_ADDRESS override as a PublicKey', async () => {
+    vi.stubEnv('NEXT_PUBLIC_REGISTRY_ADDRESS', SYSTEM_PROGRAM);
+    const { config } = await import('./config');
+    expect(config.registryAddress!.toBase58()).toBe(SYSTEM_PROGRAM);
+  });
+
+  it('reads NEXT_PUBLIC_BATCH_ADDRESS override as a PublicKey', async () => {
+    vi.stubEnv('NEXT_PUBLIC_BATCH_ADDRESS', SYSTEM_PROGRAM);
+    const { config } = await import('./config');
+    expect(config.batchAddress!.toBase58()).toBe(SYSTEM_PROGRAM);
   });
 
   it('reads NEXT_PUBLIC_RPC_URL override', async () => {

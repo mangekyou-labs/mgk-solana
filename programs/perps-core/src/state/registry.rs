@@ -15,28 +15,33 @@ pub const PAUSE_LIQUIDATIONS: u8 = 1 << 2;
 pub const PAUSE_FUNDING: u8 = 1 << 3;
 pub const PAUSE_RESERVED_MASK: u8 = 0b_1111_0000; // bits 4..7 must be 0
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct Registry {
-    pub governance: Pubkey,
-    pub instrument_count: u16,
-    pub volatility_multiplier: u16,
-    pub batch_id_counter: u64,
-    pub base_deposit: u64,
-    pub n_min: u32,
-    pub t_min_slots: u64,
-    pub t_max_slots: u64,
-    pub t_reveal_slots: u64,
-    pub bump: u8,
-    pub pause_flags: u8,
-    pub _padding: [u8; 4],
+    pub governance: Pubkey,        // offset 0 (32 bytes)
+    pub instrument_count: u16,    // offset 32 (2 bytes)
+    pub volatility_multiplier: u16, // offset 34 (2 bytes)
+    pub batch_id_counter: u64,    // offset 36 (8 bytes)
+    pub base_deposit: u64,        // offset 44 (8 bytes)
+    pub n_min: u32,              // offset 52 (4 bytes)
+    pub t_min_slots: u64,        // offset 56 (8 bytes)
+    pub t_max_slots: u64,        // offset 64 (8 bytes)
+    pub t_reveal_slots: u64,     // offset 72 (8 bytes)
+    pub bump: u8,                // offset 80 (1 byte)
+    pub pause_flags: u8,         // offset 81 (1 byte)
+    pub _padding: [u8; 4],       // offset 82 (4 bytes) — total 86
 }
 
 impl Registry {
+    /// Initialize in place. Struct field order: governance, instrument_count,
+    /// volatility_multiplier, batch_id_counter, base_deposit, n_min, t_min_slots,
+    /// t_max_slots, t_reveal_slots, bump.
     #[allow(clippy::too_many_arguments)]
     pub fn initialize_in_place(
         &mut self,
         governance: Pubkey,
+        instrument_count: u16,
+        volatility_multiplier: u16,
         base_deposit: u64,
         n_min: u32,
         t_min_slots: u64,
@@ -45,8 +50,8 @@ impl Registry {
         bump: u8,
     ) {
         self.governance = governance;
-        self.instrument_count = 0;
-        self.volatility_multiplier = 10_000; // 1.0x default
+        self.instrument_count = instrument_count;
+        self.volatility_multiplier = volatility_multiplier;
         self.batch_id_counter = 0;
         self.base_deposit = base_deposit;
         self.n_min = n_min;
@@ -112,7 +117,7 @@ impl Registry {
             pause_flags: 0,
             _padding: [0; 4],
         };
-        r.initialize_in_place(governance, 10_000_000, 5, 10, 150, 25, 0);
+        r.initialize_in_place(governance, 0, 10_000, 10_000_000, 5, 10, 150, 25, 0);
         r
     }
 }
@@ -125,10 +130,13 @@ mod tests {
     fn test_registry_new() {
         let gov = Pubkey::from([1u8; 32]);
         let r = Registry::new(gov);
+        let instrument_count = r.instrument_count;
+        let base_deposit = r.base_deposit;
+        let n_min = r.n_min;
         assert_eq!(r.governance, gov);
-        assert_eq!(r.instrument_count, 0);
-        assert_eq!(r.base_deposit, 10_000_000);
-        assert_eq!(r.n_min, 5);
+        assert_eq!(instrument_count, 0);
+        assert_eq!(base_deposit, 10_000_000);
+        assert_eq!(n_min, 5);
     }
 
     /// M7 7.8: `Registry::new` must initialize `pause_flags` to 0.
@@ -218,9 +226,12 @@ mod tests {
         let snap_base_deposit = r.base_deposit;
         let snap_bump = r.bump;
         r.set_pause_flags(PAUSE_TRADING | PAUSE_LIQUIDATIONS);
-        assert_eq!(r.instrument_count, snap_instrument_count);
-        assert_eq!(r.batch_id_counter, snap_batch_id_counter);
-        assert_eq!(r.base_deposit, snap_base_deposit);
+        let instrument_count = r.instrument_count;
+        let batch_id_counter = r.batch_id_counter;
+        let base_deposit = r.base_deposit;
+        assert_eq!(instrument_count, snap_instrument_count);
+        assert_eq!(batch_id_counter, snap_batch_id_counter);
+        assert_eq!(base_deposit, snap_base_deposit);
         assert_eq!(r.bump, snap_bump);
     }
 }

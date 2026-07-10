@@ -11,8 +11,7 @@ import { useSlotPolling } from '@/lib/stores/useSlotPolling';
 import {
   PHASE_LABEL,
   PHASE_TONE,
-  deriveDeadline,
-  formatSlotDuration,
+  formatBatchCountdown,
 } from '@/lib/trade/batchDisplay';
 
 /**
@@ -35,7 +34,7 @@ import {
  */
 export function MarketHeader() {
   const { bids, asks } = useBookTopN(0);
-  const { data: batchData } = useBatchPolling(3000);
+  const { data: batchData, registry } = useBatchPolling(3000);
   const { slot: currentSlot } = useSlotPolling(1000);
   const marketState = useMarketStatePolling(0, 5000);
 
@@ -58,10 +57,8 @@ export function MarketHeader() {
 
   const countdown = useMemo(() => {
     if (!batchData) return '—';
-    const { deadline } = deriveDeadline(batchData.status, batchData, currentSlot);
-    if (deadline == null || currentSlot == null) return '—';
-    return formatSlotDuration(Number(deadline) - currentSlot);
-  }, [batchData, currentSlot]);
+    return formatBatchCountdown(batchData.status, batchData, currentSlot, registry);
+  }, [batchData, currentSlot, registry]);
 
   // OI = long + short. Indexer hasn't run yet → null.
   const oi = marketState.data

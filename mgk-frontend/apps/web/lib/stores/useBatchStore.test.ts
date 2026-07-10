@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { useBatchStore, type BatchPollParams } from './useBatchStore';
 
-const CORE_PK = new PublicKey('CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5');
+const CORE_PK = new PublicKey('J5fVjwm96cQxcSqUz4QAmRBT75x7aN9NgG4xcnMmcfSv');
 const [REGISTRY_PDA] = sdk.deriveRegistryPda(CORE_PK);
 
 function makeRegistryBuffer(
@@ -23,14 +23,16 @@ function makeRegistryBuffer(
 ): Uint8Array {
   const buf = new Uint8Array(96);
   const view = new DataView(buf.buffer);
+  // governance: 0..32 (filled zero)
   view.setUint16(32, overrides.instrumentCount ?? 0, true);
   view.setUint16(34, overrides.volatilityMultiplier ?? 10_000, true);
-  view.setBigUint64(40, batchIdCounter, true);
-  view.setBigUint64(48, overrides.baseDeposit ?? 10_000_000n, true);
-  view.setUint32(56, overrides.nMin ?? 5, true);
-  view.setBigUint64(64, overrides.tMinSlots ?? 10n, true);
-  view.setBigUint64(72, overrides.tMaxSlots ?? 150n, true);
-  view.setBigUint64(80, overrides.tRevealSlots ?? 25n, true);
+  // #[repr(C)]: governance(32)+instrument_count(2)+volatility(2)+batch_id_counter(8)+base_deposit(8)+n_min(4)+t_min_slots(8)+t_max_slots(8)+t_reveal_slots(8)+bump(1)+pause_flags(1)+padding(4)
+  view.setBigUint64(36, batchIdCounter, true);
+  view.setBigUint64(44, overrides.baseDeposit ?? 10_000_000n, true);
+  view.setUint32(52, overrides.nMin ?? 5, true);
+  view.setBigUint64(60, overrides.tMinSlots ?? 10n, true);
+  view.setBigUint64(68, overrides.tMaxSlots ?? 150n, true);
+  view.setBigUint64(76, overrides.tRevealSlots ?? 25n, true);
   view.setUint8(88, overrides.bump ?? 255);
   return buf;
 }
@@ -108,6 +110,7 @@ function buildParams(
   return {
     connection: conn,
     programId: CORE_PK,
+    indexerUrl: '',
     intervalMs: 3000,
     ...overrides,
   };
@@ -136,11 +139,11 @@ describe('useBatchStore', () => {
     useBatchStore.getState().stopPolling();
   });
 
-  it('reads Registry, derives Batch PDA from batchIdCounter, decodes the batch', async () => {
+  it('reads Registry, resolves the active Batch account, and decodes the batch', async () => {
     const conn = new MockConnection();
-    conn.expectedBatchPda = sdk.deriveBatchPda(42n, CORE_PK)[0];
+    conn.expectedBatchPda = sdk.deriveBatchPda(41n, CORE_PK)[0];
     conn.registryResponses = [makeAccountInfo(makeRegistryBuffer(42n))];
-    conn.batchResponses = [makeAccountInfo(makeBatchBuffer(42n))];
+    conn.batchResponses = [makeAccountInfo(makeBatchBuffer(41n))];
 
     await useBatchStore.getState().startPolling(
       buildParams(conn as unknown as Connection, { intervalMs: 50 }),
@@ -148,9 +151,9 @@ describe('useBatchStore', () => {
 
     const state = useBatchStore.getState();
     expect(state.isPolling).toBe(true);
-    expect(state.currentBatchId).toBe(42n);
+    expect(state.currentBatchId).toBe(41n);
     expect(state.registry?.batchIdCounter).toBe(42n);
-    expect(state.data?.batchId).toBe(42n);
+    expect(state.data?.batchId).toBe(41n);
     expect(state.data?.status).toBe(sdk.state.BatchStatus.Committing);
     expect(state.error).toBeNull();
     // Two separate RPC calls: one for registry, one for batch.
@@ -190,9 +193,9 @@ describe('useBatchStore', () => {
     expect(conn.batchCalls.length).toBe(0);
   });
 
-  it('handles Batch PDA missing (counter > 0 but batch account uninitialized) — no error', async () => {
+  it('handles active Batch account missing (counter > 0 but batch account uninitialized) — no error', async () => {
     const conn = new MockConnection();
-    conn.expectedBatchPda = sdk.deriveBatchPda(7n, CORE_PK)[0];
+    conn.expectedBatchPda = sdk.deriveBatchPda(6n, CORE_PK)[0];
     conn.registryResponses = [makeAccountInfo(makeRegistryBuffer(7n))];
     conn.batchResponses = [null];
 
@@ -202,7 +205,7 @@ describe('useBatchStore', () => {
 
     const state = useBatchStore.getState();
     expect(state.registry?.batchIdCounter).toBe(7n);
-    expect(state.currentBatchId).toBe(7n);
+    expect(state.currentBatchId).toBe(6n);
     expect(state.data).toBeNull();
     expect(state.error).toBeNull();
   });
@@ -223,7 +226,7 @@ describe('useBatchStore', () => {
 
   it('captures errors from decodeBatch (truncated buffer)', async () => {
     const conn = new MockConnection();
-    conn.expectedBatchPda = sdk.deriveBatchPda(3n, CORE_PK)[0];
+    conn.expectedBatchPda = sdk.deriveBatchPda(2n, CORE_PK)[0];
     conn.registryResponses = [makeAccountInfo(makeRegistryBuffer(3n))];
     const short = new Uint8Array(64); // < BATCH_SIZE
     conn.batchResponses = [makeAccountInfo(short)];
@@ -239,12 +242,12 @@ describe('useBatchStore', () => {
 
   it('fires a refresh on every interval tick (Registry + Batch each tick)', async () => {
     const conn = new MockConnection();
-    conn.expectedBatchPda = sdk.deriveBatchPda(11n, CORE_PK)[0];
+    conn.expectedBatchPda = sdk.deriveBatchPda(10n, CORE_PK)[0];
     conn.registryResponses = Array.from({ length: 20 }, () =>
       makeAccountInfo(makeRegistryBuffer(11n)),
     );
     conn.batchResponses = Array.from({ length: 20 }, () =>
-      makeAccountInfo(makeBatchBuffer(11n)),
+      makeAccountInfo(makeBatchBuffer(10n)),
     );
 
     await useBatchStore.getState().startPolling(
@@ -260,12 +263,12 @@ describe('useBatchStore', () => {
 
   it('stops polling: clears the interval and flips isPolling off', async () => {
     const conn = new MockConnection();
-    conn.expectedBatchPda = sdk.deriveBatchPda(1n, CORE_PK)[0];
+    conn.expectedBatchPda = sdk.deriveBatchPda(0n, CORE_PK)[0];
     conn.registryResponses = Array.from({ length: 100 }, () =>
       makeAccountInfo(makeRegistryBuffer(1n)),
     );
     conn.batchResponses = Array.from({ length: 100 }, () =>
-      makeAccountInfo(makeBatchBuffer(1n)),
+      makeAccountInfo(makeBatchBuffer(0n)),
     );
 
     await useBatchStore.getState().startPolling(
@@ -283,20 +286,20 @@ describe('useBatchStore', () => {
 
   it('startPolling replaces any in-flight poll (no leaked intervals)', async () => {
     const conn1 = new MockConnection();
-    conn1.expectedBatchPda = sdk.deriveBatchPda(1n, CORE_PK)[0];
+    conn1.expectedBatchPda = sdk.deriveBatchPda(0n, CORE_PK)[0];
     conn1.registryResponses = Array.from({ length: 100 }, () =>
       makeAccountInfo(makeRegistryBuffer(1n)),
     );
     conn1.batchResponses = Array.from({ length: 100 }, () =>
-      makeAccountInfo(makeBatchBuffer(1n)),
+      makeAccountInfo(makeBatchBuffer(0n)),
     );
     const conn2 = new MockConnection();
-    conn2.expectedBatchPda = sdk.deriveBatchPda(2n, CORE_PK)[0];
+    conn2.expectedBatchPda = sdk.deriveBatchPda(1n, CORE_PK)[0];
     conn2.registryResponses = Array.from({ length: 100 }, () =>
       makeAccountInfo(makeRegistryBuffer(2n)),
     );
     conn2.batchResponses = Array.from({ length: 100 }, () =>
-      makeAccountInfo(makeBatchBuffer(2n)),
+      makeAccountInfo(makeBatchBuffer(1n)),
     );
 
     await useBatchStore.getState().startPolling(

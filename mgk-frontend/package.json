@@ -19,11 +19,16 @@
         "react": "19",
         "react-dom": "19"
       },
-      "ignoreMissing": ["@solana/wallet-adapter-walletconnect"]
+      "ignoreMissing": [
+        "@solana/wallet-adapter-walletconnect"
+      ]
     },
     "overrides": {
       "bs58": "^5.0.0",
       "zod": "^3.23.0"
     }
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
   }
 }

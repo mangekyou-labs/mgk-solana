@@ -11,12 +11,12 @@ import { truncatePubkey } from '@/lib/pubkey';
 import {
   PHASE_LABEL,
   deriveDeadline,
-  formatSlotDuration,
+  formatBatchCountdown,
 } from '@/lib/trade/batchDisplay';
 
 export function StatusBar() {
   const { connected, publicKey } = useWallet();
-  const { data } = useBatchPolling(3000);
+  const { data, registry } = useBatchPolling(3000);
   const { slot: currentSlot } = useSlotPolling(1000);
 
   const batchLabel = useMemo(() => {
@@ -24,13 +24,12 @@ export function StatusBar() {
 
     const { deadline } = deriveDeadline(data.status, data, currentSlot);
     const phaseLabel = PHASE_LABEL[data.status];
-    const countdown =
-      deadline != null && currentSlot != null
-        ? formatSlotDuration(Number(deadline) - currentSlot)
-        : '—';
+    const countdown = deadline != null
+      ? formatBatchCountdown(data.status, data, currentSlot, registry)
+      : '—';
 
     return `Batch: ${phaseLabel} ${countdown}`;
-  }, [data, currentSlot]);
+  }, [data, currentSlot, registry]);
 
   const connectionState = connected ? ('online' as const) : ('offline' as const);
   const walletLabel = connected && publicKey

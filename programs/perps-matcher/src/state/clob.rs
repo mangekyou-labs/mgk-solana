@@ -68,12 +68,31 @@ pub struct MatchResult {
     pub risk_breach_cancellations: u32,
 }
 
+/// Zero a MatchResult in-place. BPF-safe: avoids the ~7 KB `fills` array
+/// on the caller's frame. Use this instead of `MatchResult::new()` in BPF
+/// entry points.
+impl MatchResult {
+    pub fn zeroed_in_place(&mut self) {
+        // SAFETY: fills is a simple [FillReceipt; 128] — zeroing each field
+        // is well-defined and avoids the large stack copy of the array init.
+        self.fills = [FillReceipt::default(); MAX_FILLS_PER_BATCH];
+        self.fill_count = 0;
+        self.rejected_crossing = 0;
+        self.resting_added = 0;
+        self.resting_cancelled = 0;
+        self.self_trade_cancellations = 0;
+        self.risk_breach_cancellations = 0;
+    }
+}
+
+#[cfg(not(target_os = "solana"))]
 impl Default for MatchResult {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 impl MatchResult {
     pub fn new() -> Self {
         Self {
@@ -92,6 +111,7 @@ impl MatchResult {
 /// with the default (always-passing) per-fill risk check.
 ///
 /// See `clob_match_with_risk` for the full algorithm description.
+#[cfg(not(target_os = "solana"))]
 pub fn clob_match(state: &mut BookState, queues: &PartitionedOrders) -> MatchResult {
     clob_match_with_risk(state, queues, default_risk_check)
 }
@@ -114,6 +134,7 @@ pub fn clob_match(state: &mut BookState, queues: &PartitionedOrders) -> MatchRes
 /// the cap-aware path in `clob_match_with_caps` uses a closure that holds
 /// a reference to a per-batch caps table. fn pointers satisfy the `Fn`
 /// bound, so existing callers passing `default_risk_check` are unchanged.
+#[cfg(not(target_os = "solana"))]
 pub fn clob_match_with_risk<F>(
     state: &mut BookState,
     queues: &PartitionedOrders,
@@ -149,6 +170,42 @@ where
     result
 }
 
+/// In-place variant of `clob_match_with_risk` for BPF entry points.
+///
+/// Takes `&mut result` as a parameter instead of creating a local on the
+/// stack. The caller must have zeroed the result before calling
+/// (use `result.zeroed_in_place()`). On return, `result` contains the
+/// matching outcome.
+#[inline(always)]
+pub fn clob_match_with_risk_into<F>(
+    state: &mut BookState,
+    queues: &PartitionedOrders,
+    risk_check: F,
+    result: &mut MatchResult,
+) where
+    F: Fn(&RiskContext) -> RiskDecision,
+{
+    // 1. Cancels.
+    for cancel in queues.cancels() {
+        process_cancel(state, cancel, result);
+    }
+
+    // 2. ALO / Post-only.
+    for alo in queues.alos() {
+        process_alo(state, alo, result);
+    }
+
+    // 3. Regulars.
+    for order in queues.regulars() {
+        match order.order_type {
+            OrderType::LimitGTC => process_gtc(state, order, result, &risk_check),
+            OrderType::LimitIOC => process_ioc(state, order, result, &risk_check),
+            OrderType::Market => process_market(state, order, result, &risk_check),
+            _ => {}
+        }
+    }
+}
+
 /// Cap-aware risk check for M7 7.6 (decision D2).
 ///
 /// Looks up `ctx.user` in the `caps` slice (linear scan; max 64 unique
@@ -180,12 +237,26 @@ pub fn capped_risk_check(ctx: &RiskContext, caps: &[(Pubkey, u128)]) -> RiskDeci
 ///
 /// The `caps` slice is a `(user, max_notional)` array — see the D2
 /// implementation note: `user(32) + max_notional(16) = 48 bytes` per user.
+#[cfg(not(target_os = "solana"))]
 pub fn clob_match_with_caps(
     state: &mut BookState,
     queues: &PartitionedOrders,
     caps: &[(Pubkey, u128)],
 ) -> MatchResult {
-    clob_match_with_risk(state, queues, |ctx| capped_risk_check(ctx, caps))
+    let mut result = MatchResult::new();
+    clob_match_with_risk_into(state, queues, |ctx| capped_risk_check(ctx, caps), &mut result);
+    result
+}
+
+/// In-place variant of `clob_match_with_caps` for BPF entry points.
+#[inline(always)]
+pub fn clob_match_with_caps_into(
+    state: &mut BookState,
+    queues: &PartitionedOrders,
+    caps: &[(Pubkey, u128)],
+    result: &mut MatchResult,
+) {
+    clob_match_with_risk_into(state, queues, |ctx| capped_risk_check(ctx, caps), result)
 }
 
 /// Cancel: remove a single resting order by id, or all resting orders for

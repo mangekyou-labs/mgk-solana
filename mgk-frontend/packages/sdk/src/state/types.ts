@@ -89,9 +89,9 @@ export interface PortfolioState {
   bump: number;
 }
 
-export const BATCH_SIZE = 120;
-export const COMMITMENT_SIZE = 164;
-export const PORTFOLIO_SIZE = 1456;
+export const BATCH_SIZE = 120; // size_of::<Batch>() in Rust (verified against struct layout)
+export const COMMITMENT_SIZE = 168;
+export const PORTFOLIO_SIZE = 1456; // BPF layout: i128/u128 have 8-byte alignment (not 16 like native)
 export const MAX_POSITIONS = 32;
 export const MAX_INSTRUMENTS = 32;
 
@@ -101,7 +101,7 @@ export const MAX_RESTING_ORDERS = 256;
 export const BOOK_HEADER_SIZE = 3120; // 48 (header) + 64*24 (bids) + 64*24 (asks)
 export const RESTING_ORDER_SIZE = 96;
 export const RESTING_ORDERS_OFFSET = BOOK_HEADER_SIZE;
-export const REGISTRY_SIZE = 96;
+export const REGISTRY_SIZE = 86; // bytes (packed struct, no 8-byte alignment padding)
 
 // ---------------------------------------------------------------------------
 // Order book types
@@ -158,6 +158,7 @@ export interface RegistryState {
   tMaxSlots: bigint;
   tRevealSlots: bigint;
   bump: number;
+  pauseFlags: number;
 }
 
 export function readI128(view: DataView, offset: number): bigint {

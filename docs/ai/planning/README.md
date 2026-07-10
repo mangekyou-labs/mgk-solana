@@ -629,7 +629,15 @@ Identified during the design-vs-impl audit for M7.7. Ordered by severity. These 
 **Deploy notes (2026-06-20):**
 - perps-core ProgramData was closed (`solana program close DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar --bypass-warning`), then fresh-deployed to new ID `CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5`. The old ID is permanently closed — Solana prohibits recreation at the same program ID.
 - matcher and oracle upgraded in-place.
-- **Build pipeline issue**: `cargo build-sbf` emits `.bss` / `.bss.S` sections in the ELF that the BPF loader rejects (`ELF error: Found writable section (.bss) in ELF`). Fix: `llvm-objcopy --remove-section .bss <input.so> <output.so>` before `solana program deploy`. The stripped .so is what was actually deployed. SHAs of deployed binaries: perps-core `33062bb64b...`, matcher `989e8e5f2d...`, oracle `cf0d07fa10...`.
+- The stripped .so was what was actually deployed. SHAs of deployed binaries: perps-core `33062bb64b...`, matcher `989e8e5f2d...`, oracle `cf0d07fa10...`.
+
+> **⚠️ BLOCKING — Build pipeline: `.bss` NOBITS sections cause deploy failures**
+> `cargo build-sbf` emits `.bss.S` (and sometimes `.bss`) writable NOBITS sections. The Solana BPF loader rejects these with `ELF error: Found writable section (.bss) in ELF, read-write data not supported`.
+> **Workaround (requires 2 steps):** `cargo build-sbf && llvm-objcopy --remove-section .bss --remove-section .bss.S target/deploy/*.so target/deploy/*.so`
+> **Root cause:** `#[link_section = ".bss.S"]` on `static mut` scratch buffers in `programs/perps-matcher/src/instructions.rs`. Despite explicit `[0u8; N]` initialization, LLVM BPF backend places zero-initialized statics in NOBITS sections.
+> **Source-level fix needed:** Change `#[link_section = ".bss.S"]` to force loadable section, OR replace `static mut` scratch with heap-allocation via entry point stack allocation.
+> **Partial fix (not working yet):** `~/.cargo/bin/cargo-sbf` wrapper written but not resolving manifest path / CWD correctly. Fix not complete — requires more than 2 attempts.
+> **Impact:** Every `cargo build-sbf` must be followed by `llvm-objcopy --remove-section .bss --remove-section .bss.S` before `solana program deploy`. All M8 future deploys blocked until this is fixed.
 
 **Blast radius:** Off-chain CPI callers use env var fallbacks, not these functions. On-chain CPI (future) is blocked.
 
@@ -690,6 +698,46 @@ M1 (Oracle) ───► M3 (Core) ───► M4 (Batch) ───► M5 (Liqu
                                            └─ 8.5: Insurance-fund inventory (M8-D) — base_reserves/quote_reserves in Vault, soft tiebreaker in liquidation optimizer
 ```
 
+## Reconciliation (2026-06-20)
+
+### M8.1 Devnet Deploy — Confirmed ✅
+Commit `63fbe8c` ("mgk protocol: M8.1 devnet deploy — fresh perps-core ID + all ID refs updated") landed 2026-06-20. All three programs reachable on devnet at:
+- perps-core: `CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5`
+- perps-matcher: `AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF`
+- percolator-oracle: `6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA`
+
+`programs/common/src/program_ids.rs` updated with real IDs. `program_ids.rs` test (`assert each function returns non-zero Pubkey`) passes.
+
+### Uncommitted Protocol Changes — R4b BPF Stack Fixes ⚠️
+6 files in `programs/perps-matcher/` and `programs/perps-core/` have uncommitted M7.6/M7.7 work:
+
+| File | Change |
+|------|--------|
+| `perps-matcher/src/state/clearing.rs` | `#[cfg(not(target_os = "solana"))]` on `compute_clearing`; `pub(crate)` scratch types (`BuyEntry`, `SellEntry`); `compute_clearing_into` BPF-safe variant |
+| `perps-matcher/src/state/clob.rs` | BPF stack-safe `into` variants; scratch buffer allocation pattern |
+| `perps-matcher/src/state/book.rs` | `BookState::zeroed_in_place()` — BPF-safe in-place zero instead of stack-allocating new struct |
+| `perps-matcher/src/state/queue.rs` | `#[cfg(not(target_os = "solana"))]` guards on host-only helpers |
+| `perps-core/src/instructions/clear_batch.rs` | M7 7.6 cap-wiring + `#[cfg(not(target_os = "solana"))]` guards |
+| `perps-matcher/src/instructions.rs` | BPF-safe entry point variants |
+
+**Status**: These are the R4b BPF stack overflow fixes that were re-applied 2026-06-19 but NOT included in the 63fbe8c deploy commit. The 63fbe8c deploy used the stripped .so binaries (per B4b note: "the stripped .so was what was actually deployed"). These fixes must be committed and a new .so built + deployed before M8.2+ work can proceed.
+
+**Next step**: Commit these 6 files, run `cargo build-sbf && llvm-objcopy --remove-section .bss --remove-section .bss.S`, deploy new binaries.
+
+### Indexer CORS Fix — Frontend, Not Protocol
+`mgk-frontend/apps/indexer/src/main.ts` and `package.json` updated to add `@fastify/cors`. Fixes `ERR_CONNECTION_REFUSED` → `CORS policy` error when browser JS calls `localhost:4000/api/*`. This is a frontend/indexer concern, not a protocol concern.
+
+### Devnet Protocol State — No Active Batch ⚠️ Expected
+Devnet registry has `batchIdCounter=0`, phase=-1. This is expected behavior — no keeper is running to initialize the registry and open the first batch. Frontend commit/reveal flow (M3) is fully wired and correct (all 5 accounts sent per the 2026-06-20 bug fixes), but no orders can be placed until a batch exists.
+
+**Frontend bugs fixed 2026-06-20**:
+- `CommitOrder` sent only 2 accounts → now sends 5 (commitment_pda, user, portfolio_pda, batch_pda, registry_pda)
+- `RevealOrder` sent only 1 account → now sends 5 (same set)
+- `commit()` used stale `batchId` from store → now re-fetches registry live
+
+### M8.2–8.5 Status
+All four M8 adoption items (8.2 Multi-venue oracle, 8.3 Freshness-weighted mark, 8.4 Toxic-taker detection, 8.5 Insurance-fund inventory) are not started.
+
 ## Non-Goals (Out of Scope for MVP)
 
 - **Wholesale PropAMM architecture** — discrete tick book (`mgk-propamm` program), `LiquidateUserViaPropamm` (disc `0xF`), `PropAmmConfig`/`PropAmmPortfolio` accounts. Rejected 2026-06-19. The CLOB is the architecture; PropAMM contributes defensive features only.
@@ -703,3 +751,95 @@ M1 (Oracle) ───► M3 (Core) ───► M4 (Batch) ───► M5 (Liqu
 - Lazy funding accrual on portfolio touch
 - E2E tests with local validator (deferred — needs `test-validator` setup)
 
+## Reconciliation (2026-07-02)
+
+Triggered by `npx ai-devkit@latest lint` + a 66-file uncommitted diff on `feature-mgk-frontend`. This reconciliation focuses on the on-chain side: confirming the M8.1 deploy state, the 5 new operational perps-core instructions (15–19), the BSS NOBITS deploy blocker, the matcher 1→5 decomposition, and the M8 PropAMM-inspired adoptions.
+
+### Confirmed state (unchanged from 2026-07-01)
+
+- perps-core: `3jYQ4mpWBBtwrzYQ4zzKhgqVcWWsG2HpXi9oXTBpekja` (deployed, executable, 111KB)
+- perps-matcher: `AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF`
+- percolator-oracle: `6M9eEiDKy8imbDi44ZqquyfknNbveRjT4j9VnvYaHtmA`
+- First resting order verified: slot 473187751, tx `5kSxSdUFtMwAXjBTp2fxPMBS96qWFDTWKut64C5MPh6xMkwreSKhYvAVjug9SM4NrM13XLyCJr6SY5mp2snPkavn`
+- 322 Rust tests passing, 1 ignored BPF-only; 632 frontend tests passing
+- M1, M3, M4, M5, M6 (6a-6k), M7.1-7.8, M7.7.R, M8.1 all complete
+- M8.2, M8.3, M8.4, M8.5 not started (post-v1.1)
+
+### Newly in the uncommitted diff (on-chain side)
+
+- 5 new perps-core instructions: `InitVault` (15), `CreateBatch` (16), `SetBatchCounter` (17), `CreatePortfolio` (18, has BPF `invoke_signed` seed pointer bug — workaround: `InitPortfolioForUser` disc 19), `InitPortfolioForUser` (19, keeper pre-creation)
+- Matcher: decomposed `ShuffleAndMatch` (design spec 1 monolithic instruction) into 5 modular instructions: `ComputeClearing`, `CancelResting`, `ModifyResting`, `ClearAndMatch`, `CancelAll`
+- BPF alignment fixes: `Batch.initialize_in_place()` + `Instrument.initialize_in_place()` + `Registry.initialize_in_place()` all replaced with direct byte-offset ptr writes
+- BPF stack safety re-apply: `#[link_section = ".bss.S"]` scratch buffers + `into` variants for `OrderBook`/`Clearing` results + `#[cfg(not(target_os = "solana"))]` on host-only helpers
+- `commit_order.rs` expanded with edge cases: batch state guard, portfolio mismatch guard, free-collateral guard (+184 lines)
+- `clear_batch.rs` cap-wiring re-applied (M7.7.R work that was missing from the 63fbe8c deploy commit)
+- `lifecycle.rs` e2e harness updated for the 5-settle-call-site account-list change (book + oracle + matcher_program)
+
+### Newly in the uncommitted diff (M8 PropAMM-Inspired Adoptions — design only)
+
+- `docs/ai/design/feature-onchain-perps-dex.md` updated with § **PropAMM-Inspired Adoptions (M8)**: 4 features adopted, full PropAMM architecture rejected
+  - M8-A: Continuous multi-venue fair-value oracle (new `PostMultiVenuePrice` instruction + new external oracle-keeper Node.js service)
+  - M8-B: Freshness-weighted mark price blend (replaces the current sigmoid staleness blend)
+  - M8-C: Toxic-taker scoring per fill (new `toxicity.rs` module in matcher)
+  - M8-D: Insurance-fund inventory tracking (extend `Vault` with `base_reserves`/`quote_reserves`; soft tiebreaker in liquidation optimizer)
+- Mermaid diagram updated to include `MultiVenuePrice` + `Oracle Keeper`
+- "Mark Price Model" section renamed "Freshness-Weighted Composite" with the M8-B formula
+
+### Risk re-evaluated
+
+| ID | Risk | Severity | Status | Mitigation / Plan |
+|----|------|----------|--------|-------------------|
+| R-BSS | BSS NOBITS deploy pipeline requires 2-step `llvm-objcopy` after every `cargo build-sbf` | **H** | Open | Captured as **T6.11** in `docs/ai/planning/2026-06-16-feature-mgk-frontend.md`. Root cause: `#[link_section = ".bss.S"]` on `static mut` scratch in `programs/perps-matcher/src/instructions.rs`. Source-level fix or work around with `.cargo/build-sbf-wrapper`. Blocks every future redeploy. |
+| R-CreatePortfolio | `CreatePortfolio` (disc 18) `invoke_signed` seed pointer bug | M | Workaround | `InitPortfolioForUser` (disc 19) keeper pre-creation. Long-term fix: use `pinocchio::cpi::invoke_signed` + `Seed::from(&[u8])` + `Signer::from(&signer_seeds)`. Captured as **T6.14**. |
+| R-BookKeypair | Book account is a matcher-owned keypair on devnet, not a PDA | M | Workaround | `BOOK_ADDRESS` env override. Long-term: matcher `InitializeBook` instruction (disc 5). Captured as **T6.12**. |
+| R-KeeperRace | Keeper can double-crank (overlapping initial/interval cycles submit a stale second `ClearBatch`/`SettleBatch`) | M | Workaround | Observe and ignore. Long-term: `Promise` mutex keyed on `(batchId, phase)`. Captured as **T6.13**. |
+| R-PhantomRPC | Phantom wallet intercepts all network reads (curl, solana CLI, tsx) when the browser is open; corrupts preflight simulation | M | Open | Switch test wallet to Solflare or Backpack (both can override RPC). Documented in `memory/phantom-rpc-cache-nodejs.md` and T6.1.1. |
+
+### Coordination
+
+- **Per-feature phase files**: `npx ai-devkit@latest lint --feature onchain-perps-dex` flags 4 missing per-feature phase files (planning/testing/deployment/monitoring). The `docs/ai/planning/README.md` and `docs/ai/testing/feature-mgk-onchain-perps-dex.md` are the de-facto phase docs. Per-feature files can be created as thin symlinks/wrappers in a v1.1 cleanup pass.
+- **Linting/doc parity**: The uncommitted diff includes updates to `.superstack/build-context.md` (test inventory 322, devnet deployment table) and `docs/ai/implementation/2026-07-01-feature-onchain-perps-dex.md` (alignment report, deviations table). These are the authoritative implementation snapshot; this README is the milestone/task plan.
+- **Branch layout**: All on-chain work is on `feature-mgk-frontend` because it's a prerequisite for the frontend. `feature-onchain-perps-dex` worktree at `.worktrees/feature-onchain-perps-dex` is dormant. Once v1 ships, split the on-chain work into its own branch + subtree into the perps-protocol repo (per the M6 / M8 design doc § Branch Layout).
+
+### What to do next (on-chain side)
+
+1. **T6.11 — BSS NOBITS root-cause fix** (1 engineer, 1 day). Highest unblock for future work.
+2. **T6.14 — `CreatePortfolio` long-term fix** (1 engineer, half-day). Allows browser-wallet portfolio creation without going through the keeper queue.
+3. **T6.12 — Matcher `InitializeBook`** (1 engineer, 1 day). Removes the `BOOK_ADDRESS` env override; book becomes a real PDA.
+4. **T8.x — M8 PropAMM-Inspired Adoptions** (post-v1.1, design doc complete; tasks captured in mgk-frontend planning doc as T7.1–T7.4). T7.1 (multi-venue oracle keeper) is the first to start because T7.2 (freshness-weighted mark) depends on it.
+
+### Memory notes captured
+
+- `mgk-frontend/MEMORY_BPF_DEPLOY.md` — BSS NOBITS deploy pipeline (all attempted fixes + current 2-step workaround)
+- `memory/phantom-rpc-cache-nodejs.md` — Phantom intercepts all network reads
+- `memory/solana-bpf-deploy-elf-corrupt.md` — covered already
+- `mgk-frontend/.superstack/` — local snapshot of the build context for the frontend
+
+## Reconciliation (2026-07-02 - devnet frontend/protocol bridge)
+
+The frontend Phantom-simulation issue was traced to protocol/frontend account drift rather than Phantom alone. The current devnet deployment uses keypair-owned registry, vault, book, and current batch accounts, while the web client still derived PDAs for registry/batch in several paths.
+
+### Protocol-facing facts from the fix
+
+- Current devnet registry: `F7zWN2XrVqNDBBYqsYpgxHa6AuPK1aQE33kHwM4f8ayV`.
+- Current vault: `3FZS8JUn8FGz1CUroGYwrBVHqotaUquJMNnSuBCQxheT`.
+- Current matcher-owned book keypair: `5nfbjqTYpsnHnmCifdFpwLwajhyb8n6orVvbMbSrGT6w`.
+- Batch #2 became stranded in `Revealing` with `totalCommitments=1`, `totalRevealed=0`, and an expired reveal deadline.
+- Keeper recovery created batch #3 `BQgRjj7fuuuBkmn6RCgAFf3MVDEuLYpMRF5uYznHXUk4`, status `Committing`, registry counter `4`.
+
+### Planning impact
+
+| Item | Update |
+|---|---|
+| R-PhantomRPC | Reclassified from blanket blocker to partial blocker. Phantom still needs a full commit/reveal proof, but the always-revert behavior was caused by stale/wrong account resolution plus stranded batch state. |
+| R-KeeperRace / T6.13 | Expanded to include zero-reveal recovery. Keeper now creates a fresh batch when an expired reveal window has zero revealed orders; full cycle mutex still remains open. |
+| R-BookKeypair / T6.12 | Still open. `BOOK_ADDRESS` override is required until matcher has a canonical initialize-book path. |
+| Protocol zero-reveal path | New follow-up. Long-term protocol should explicitly slash/settle or otherwise transition zero-reveal batches instead of relying only on off-chain skip recovery. |
+
+### Verification
+
+- `npx ai-devkit@latest lint` passed.
+- `npx ai-devkit@latest lint --feature mgk-frontend` passed.
+- Web focused tests/typecheck passed.
+- Indexer focused tests/typecheck passed.
+- Playwright loaded `/trade?rpc=quicknode` with 0 console errors after restart and showed `Batch: Committing` / `accepting orders`.

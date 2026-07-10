@@ -10,7 +10,7 @@ import {
 
 const POSITIONS_OFFSET = 152;
 const POSITION_SIZE = 24;
-const FUNDING_CHECKPOINT_OFFSET = 920;
+const FUNDING_CHECKPOINT_OFFSET = 920; // BPF: i128 8-byte aligned, no 16-byte padding before this field
 const FUNDING_CHECKPOINT_SIZE = 16;
 
 export function decodePosition(
@@ -59,7 +59,7 @@ export function decodePortfolio(data: Uint8Array): PortfolioState {
     positionsLen,
     positions,
     lastFundingCheckpoint,
-    lastBatchId: view.getBigUint64(1432, true),
+        lastBatchId: view.getBigUint64(1432, true),
     lastSlot: view.getBigUint64(1440, true),
     bump: view.getUint8(1448),
   };

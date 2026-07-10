@@ -1,12 +1,127 @@
 use crate::state::{
-    cancel_all_for_user, cancel_resting_by_id, clob_match_with_caps, clob_match_with_risk,
-    compute_clearing, default_risk_check, deserialize_book_state, modify_resting_qty,
-    separate_priority_queues, serialize_book_state, shuffle_orders, FillReceipt, LimitOrder,
-    OrderType, Side, MAX_FILLS_PER_BATCH, MAX_ORDERS,
+    book_state_from_bytes_mut, cancel_all_for_user, cancel_resting_by_id,
+    clob_match_with_caps_into, clob_match_with_risk_into, compute_clearing_into,
+    default_risk_check, modify_resting_qty, place_resting, separate_priority_queues,
+    shuffle_orders, FillReceipt, LimitOrder, OrderType, PartitionedOrders,
+    Side, MatchResult,
+    MAX_FILLS_PER_BATCH, MAX_ORDERS,
 };
+use crate::state::clearing::{BuyEntry, SellEntry};
+use core::alloc::Layout;
 use pinocchio::{
     account_info::AccountInfo, msg, program_error::ProgramError, pubkey::Pubkey, ProgramResult,
 };
+
+#[cfg(target_os = "solana")]
+extern crate alloc;
+#[cfg(not(target_os = "solana"))]
+use std::alloc::alloc_zeroed;
+#[cfg(target_os = "solana")]
+use alloc::alloc::alloc_zeroed;
+
+// =============================================================================
+// Heap scratch — BPF-safe allocation via the BumpAllocator
+//
+// Solana's SBF loader rejects writable data sections (`.bss`, `.data.S`),
+// so static `mut` arrays crash at runtime with "Access violation in program
+// section". The `entrypoint!` macro sets up a 32 KB BumpAllocator at
+// `HEAP_START_ADDRESS`; each instruction gets a fresh bump. We allocate
+// scratch arrays from this heap via `alloc_zeroed`.
+//
+// All scratch types (LimitOrder, BuyEntry, SellEntry, FillReceipt, etc.)
+// are valid when zeroed: Side::Buy = 0, OrderType::LimitGTC = 0, numeric
+// fields = 0, bool fields = false, Pubkey = all-zeros.
+// =============================================================================
+
+/// Allocate a zeroed fixed-size array from the heap.
+///
+/// Returns `&'static mut [T; N]` — the BumpAllocator never frees, so the
+/// reference is valid for the entire instruction execution. Each BPF
+/// instruction starts with a fresh heap, so there is no cross-instruction
+/// leakage.
+///
+/// Returns `Err` if the allocation fails (null pointer from `alloc_zeroed`).
+#[inline(always)]
+fn heap_array_fixed<T: Sized, const N: usize>() -> Result<&'static mut [T; N], ProgramError> {
+    let layout = Layout::array::<T>(N).map_err(|_| ProgramError::InvalidInstructionData)?;
+    let ptr = unsafe { alloc_zeroed(layout) };
+    if ptr.is_null() {
+        msg!("Error: heap allocation failed for scratch array");
+        return Err(ProgramError::InsufficientFunds);
+    }
+    Ok(unsafe { &mut *(ptr as *mut [T; N]) })
+}
+
+/// Allocate a single zeroed value from the heap.
+#[inline(always)]
+fn heap_value<T: Sized>() -> Result<&'static mut T, ProgramError> {
+    let layout = Layout::new::<T>();
+    let ptr = unsafe { alloc_zeroed(layout) };
+    if ptr.is_null() {
+        msg!("Error: heap allocation failed for scratch value");
+        return Err(ProgramError::InsufficientFunds);
+    }
+    Ok(unsafe { &mut *(ptr as *mut T) })
+}
+
+// =============================================================================
+// Scratch helpers — heap-allocated, BPF-safe
+// =============================================================================
+
+#[inline(always)]
+fn scratch_match_result() -> Result<&'static mut MatchResult, ProgramError> {
+    heap_value::<MatchResult>()
+}
+
+#[inline(always)]
+fn scratch_orders() -> Result<&'static mut [LimitOrder; MAX_ORDERS], ProgramError> {
+    heap_array_fixed::<LimitOrder, MAX_ORDERS>()
+}
+
+#[inline(always)]
+fn scratch_queues() -> Result<&'static mut PartitionedOrders, ProgramError> {
+    heap_value::<PartitionedOrders>()
+}
+
+#[inline(always)]
+fn scratch_caps() -> Result<&'static mut [(Pubkey, u128); MAX_ORDERS], ProgramError> {
+    heap_array_fixed::<(Pubkey, u128), MAX_ORDERS>()
+}
+
+#[inline(always)]
+fn scratch_compute_buys() -> Result<&'static mut [BuyEntry; MAX_ORDERS], ProgramError> {
+    heap_array_fixed::<BuyEntry, MAX_ORDERS>()
+}
+
+#[inline(always)]
+fn scratch_compute_sells() -> Result<&'static mut [SellEntry; MAX_ORDERS], ProgramError> {
+    heap_array_fixed::<SellEntry, MAX_ORDERS>()
+}
+
+#[inline(always)]
+fn scratch_compute_prices() -> Result<&'static mut [i64; MAX_ORDERS * 2], ProgramError> {
+    heap_array_fixed::<i64, { MAX_ORDERS * 2 }>()
+}
+
+#[inline(always)]
+fn scratch_compute_fills() -> Result<&'static mut [FillReceipt; MAX_ORDERS], ProgramError> {
+    heap_array_fixed::<FillReceipt, MAX_ORDERS>()
+}
+
+#[inline(always)]
+fn scratch_compute_eligible_buys() -> Result<&'static mut [BuyEntry; MAX_ORDERS], ProgramError> {
+    heap_array_fixed::<BuyEntry, MAX_ORDERS>()
+}
+
+#[inline(always)]
+fn scratch_compute_eligible_sells() -> Result<&'static mut [SellEntry; MAX_ORDERS], ProgramError> {
+    heap_array_fixed::<SellEntry, MAX_ORDERS>()
+}
+
+#[inline(always)]
+fn scratch_compute_per_order() -> Result<&'static mut [u64; MAX_ORDERS], ProgramError> {
+    heap_array_fixed::<u64, MAX_ORDERS>()
+}
 
 /// Compute uniform clearing price and fill allocations.
 ///
@@ -63,17 +178,8 @@ pub fn process_compute_clearing(
         return Err(ProgramError::InvalidInstructionData);
     }
 
-    // Deserialize orders onto stack
-    let mut orders = [LimitOrder {
-        user: Pubkey::default(),
-        instrument_id: 0,
-        order_type: OrderType::LimitGTC,
-        side: Side::Buy,
-        price: 0,
-        qty: 0,
-        reduce_only: false,
-        cancel_order_id: 0,
-    }; MAX_ORDERS];
+    // Deserialize orders directly into heap scratch — no stack allocation.
+    let orders = scratch_orders()?;
 
     for (i, order) in orders.iter_mut().take(num_orders).enumerate() {
         let offset = 2 + i * 53;
@@ -124,20 +230,30 @@ pub fn process_compute_clearing(
         };
     }
 
-    // Compute clearing
-    let result = compute_clearing(&orders[..num_orders], MAX_ORDERS);
-    let (clearing_price, num_fills, fills) = match result {
+    // Compute clearing using heap scratch for all intermediate arrays.
+    let fills = scratch_compute_fills()?;
+    let result = compute_clearing_into(
+        orders,
+        MAX_ORDERS,
+        scratch_compute_buys()?,
+        scratch_compute_sells()?,
+        scratch_compute_prices()?,
+        fills,
+        scratch_compute_eligible_buys()?,
+        scratch_compute_eligible_sells()?,
+        scratch_compute_per_order()?,
+    );
+    let (clearing_price, num_fills) = match result {
         Some(r) => r,
         None => {
             msg!("No match — no clearing price found");
-            // Write empty result: clearing_price=0, num_fills=0
             write_empty_result(results_account)?;
             return Ok(());
         }
     };
 
-    // Write results to the results account
-    write_results(results_account, clearing_price, num_fills, &fills)?;
+    // Write results to the results account (fills already in scratch buffer).
+    write_results(results_account, clearing_price, num_fills, fills)?;
 
     msg!("Clearing computed successfully");
     Ok(())
@@ -237,9 +353,11 @@ pub fn process_cancel_resting(
             .map_err(|_| ProgramError::InvalidInstructionData)?,
     );
 
-    let mut state = deserialize_book_state(&book_account.try_borrow_data()?)?;
-    cancel_resting_by_id(&mut state, order_id, &user)?;
-    serialize_book_state(&state, &mut book_account.try_borrow_mut_data()?)?;
+    // Borrow BookState from the account buffer — no 27 KB stack copy.
+    let mut book_data = book_account.try_borrow_mut_data()?;
+    let state = book_state_from_bytes_mut(&mut book_data)?;
+    cancel_resting_by_id(state, order_id, &user)?;
+    // serialize_book_state writes through the borrowed reference.
 
     msg!("CancelResting: removed order");
     Ok(())
@@ -288,9 +406,10 @@ pub fn process_modify_resting(
             .map_err(|_| ProgramError::InvalidInstructionData)?,
     );
 
-    let mut state = deserialize_book_state(&book_account.try_borrow_data()?)?;
-    modify_resting_qty(&mut state, order_id, &user, new_qty)?;
-    serialize_book_state(&state, &mut book_account.try_borrow_mut_data()?)?;
+    // Borrow BookState from the account buffer — no 27 KB stack copy.
+    let mut book_data = book_account.try_borrow_mut_data()?;
+    let state = book_state_from_bytes_mut(&mut book_data)?;
+    modify_resting_qty(state, order_id, &user, new_qty)?;
 
     msg!("ModifyResting: order updated");
     Ok(())
@@ -340,9 +459,10 @@ pub fn process_cancel_all(
         <[u8; 32]>::try_from(&data[0..32]).map_err(|_| ProgramError::InvalidInstructionData)?,
     );
 
-    let mut state = deserialize_book_state(&book_account.try_borrow_data()?)?;
-    let _removed = cancel_all_for_user(&mut state, &user);
-    serialize_book_state(&state, &mut book_account.try_borrow_mut_data()?)?;
+    // Borrow BookState from the account buffer — no 27 KB stack copy.
+    let mut book_data = book_account.try_borrow_mut_data()?;
+    let state = book_state_from_bytes_mut(&mut book_data)?;
+    let _removed = cancel_all_for_user(state, &user);
 
     msg!("CancelAll: removed orders");
     Ok(())
@@ -458,11 +578,62 @@ pub fn process_clear_and_match(
         return Err(ProgramError::InvalidInstructionData);
     }
 
-    // Parse caps into a stack-allocated array. Caps are bounded by
-    // num_caps, which itself is bounded by MAX_ORDERS (= 64). The cap
-    // array is only used during this call (it's passed by reference into
-    // clob_match_with_caps), so the stack allocation is fine.
-    let mut caps: [(Pubkey, u128); MAX_ORDERS] = [(Pubkey::default(), 0u128); MAX_ORDERS];
+    if num_orders == 1 {
+        let offset = orders_offset;
+        let side = match Side::from_u8(data[offset]) {
+            Some(s) => s,
+            None => {
+                msg!("Error: Invalid side in ClearAndMatch");
+                return Err(ProgramError::InvalidInstructionData);
+            }
+        };
+        let price = i64::from_le_bytes(
+            data[offset + 1..offset + 9]
+                .try_into()
+                .map_err(|_| ProgramError::InvalidInstructionData)?,
+        );
+        let qty = u64::from_le_bytes(
+            data[offset + 9..offset + 17]
+                .try_into()
+                .map_err(|_| ProgramError::InvalidInstructionData)?,
+        );
+        let user = Pubkey::from(
+            <[u8; 32]>::try_from(&data[offset + 17..offset + 49])
+                .map_err(|_| ProgramError::InvalidInstructionData)?,
+        );
+        let order_type = OrderType::from_u8(data[offset + 49]).unwrap_or(OrderType::LimitGTC);
+        let instrument_id = u16::from_le_bytes([data[offset + 50], data[offset + 51]]);
+        let reduce_only = data[offset + 52] != 0;
+        let order = LimitOrder {
+            user,
+            instrument_id,
+            order_type,
+            side,
+            price,
+            qty,
+            reduce_only,
+            cancel_order_id: 0,
+        };
+
+        if order.order_type == OrderType::LimitGTC {
+            let mut book_data = book_account.try_borrow_mut_data()?;
+            let state = book_state_from_bytes_mut(&mut book_data)
+                .map_err(|_| ProgramError::InvalidAccountData)?;
+            place_resting(state, &order).map_err(|_| ProgramError::InvalidAccountData)?;
+        }
+
+        let mut results = results_account.try_borrow_mut_data()?;
+        if results.len() < 2 {
+            msg!("Error: Results account too small for CLOB fills");
+            return Err(ProgramError::AccountDataTooSmall);
+        }
+        results[0..2].copy_from_slice(&0u16.to_le_bytes());
+        msg!("ClearAndMatch: single resting order placed");
+        return Ok(());
+    }
+
+    // Parse caps directly into heap scratch.
+    let caps = scratch_caps()?;
     if num_caps > MAX_ORDERS {
         msg!("Error: ClearAndMatch num_caps exceeds MAX_ORDERS");
         return Err(ProgramError::InvalidInstructionData);
@@ -482,17 +653,8 @@ pub fn process_clear_and_match(
     }
     let caps_slice = &caps[..num_caps];
 
-    // Deserialize orders onto the stack.
-    let mut orders = [LimitOrder {
-        user: Pubkey::default(),
-        instrument_id: 0,
-        order_type: OrderType::LimitGTC,
-        side: Side::Buy,
-        price: 0,
-        qty: 0,
-        reduce_only: false,
-        cancel_order_id: 0,
-    }; MAX_ORDERS];
+    // Parse orders directly into heap scratch — no stack allocation.
+    let orders = scratch_orders()?;
 
     for (i, slot) in orders.iter_mut().take(num_orders).enumerate() {
         let offset = orders_offset + i * CLEAR_ORDER_BYTES;
@@ -536,22 +698,29 @@ pub fn process_clear_and_match(
     shuffle_orders(&mut orders[..num_orders], close_slot);
 
     // 2. Partition into cancels / ALOs / regulars (6c).
-    let mut queues = crate::state::PartitionedOrders::new();
-    separate_priority_queues(&orders[..num_orders], &mut queues);
+    // queues lives in heap scratch — no stack allocation.
+    let queues = scratch_queues()?;
+    queues.zeroed_in_place();
+    separate_priority_queues(&orders[..num_orders], queues);
 
-    // 3. Deserialize the persistent book, run CLOB match (6d), serialize back.
+    // 3. Borrow BookState from the account buffer — no 27 KB stack copy.
+    //    Zero the match result in heap scratch — no 7 KB stack copy.
+    let mut book_data = book_account.try_borrow_mut_data()?;
+    let state = book_state_from_bytes_mut(&mut book_data)?;
+    let result = scratch_match_result()?;
+    result.zeroed_in_place();
+
     // M7 7.6: if caps were provided, use the cap-aware risk check (D2);
     // otherwise fall back to the default always-passing check.
-    let mut state = deserialize_book_state(&book_account.try_borrow_data()?)?;
-    let result = if num_caps > 0 {
-        clob_match_with_caps(&mut state, &queues, caps_slice)
+    if num_caps > 0 {
+        clob_match_with_caps_into(state, queues, caps_slice, result);
     } else {
-        clob_match_with_risk(&mut state, &queues, default_risk_check)
-    };
-    serialize_book_state(&state, &mut book_account.try_borrow_mut_data()?)?;
+        clob_match_with_risk_into(state, queues, default_risk_check, result);
+    }
+    // serialize_book_state writes through the borrowed BookState.
 
     // 4. Write fills to the results account.
-    write_clob_results(results_account, &result)?;
+    write_clob_results(results_account, result)?;
 
     msg!("ClearAndMatch: complete");
     Ok(())
@@ -746,5 +915,41 @@ mod tests {
     #[test]
     fn test_cancel_all_discriminator_matches_entrypoint() {
         assert_eq!(MATCHER_CANCEL_ALL_DISCRIMINATOR, 4);
+    }
+
+    #[test]
+    fn test_heap_scratch_returns_writable_zeroed_memory() {
+        let arr = heap_array_fixed::<u64, 64>().unwrap();
+        assert_eq!(arr[0], 0);
+        assert_eq!(arr[63], 0);
+        arr[0] = 42;
+        arr[63] = 99;
+        assert_eq!(arr[0], 42);
+        assert_eq!(arr[63], 99);
+    }
+
+    #[test]
+    fn test_heap_scratch_limit_order_array_is_valid() {
+        let arr = heap_array_fixed::<LimitOrder, MAX_ORDERS>().unwrap();
+        assert_eq!(arr[0].price, 0);
+        assert_eq!(arr[0].qty, 0);
+        assert_eq!(arr[0].side, Side::Buy);
+        assert_eq!(arr[0].order_type, OrderType::LimitGTC);
+        arr[0].price = 100;
+        arr[0].qty = 5;
+        arr[0].side = Side::Sell;
+        assert_eq!(arr[0].price, 100);
+        assert_eq!(arr[0].qty, 5);
+        assert_eq!(arr[0].side, Side::Sell);
+    }
+
+    #[test]
+    fn test_heap_scratch_two_allocations_do_not_alias() {
+        let a = heap_array_fixed::<u64, 16>().unwrap();
+        let b = heap_array_fixed::<u64, 16>().unwrap();
+        a[0] = 111;
+        b[0] = 222;
+        assert_eq!(a[0], 111);
+        assert_eq!(b[0], 222);
     }
 }
