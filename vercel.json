@@ -1,0 +1,7 @@
+{
+  "buildCommand": "cd mgk-frontend && pnpm -F @mgk/sdk build && pnpm -F web build",
+  "installCommand": "cd mgk-frontend && pnpm install --filter web --filter @mgk/sdk --ignore-scripts",
+  "framework": "nextjs",
+  "regions": ["iad1"],
+  "outputDirectory": "mgk-frontend/apps/web/.next"
+}

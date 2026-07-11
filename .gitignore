@@ -60,6 +60,7 @@ desktop.ini
 !**/tsconfig*.json
 !**/test-fixtures/**/*.json
 !sbf-solana-solana.json
+!vercel.json
 !Surfpool.toml
 !pnpm-workspace.yaml
 

@@ -28,6 +28,9 @@
       "zod": "^3.23.0"
     }
   },
+  "dependencies": {
+    "next": "16.2.9"
+  },
   "devDependencies": {
     "tsx": "^4.19.0"
   }
