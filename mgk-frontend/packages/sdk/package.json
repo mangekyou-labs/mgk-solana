@@ -21,12 +21,12 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@types/node": "^22.9.0",
-    "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   },
   "dependencies": {
     "@noble/hashes": "^2.2.0",
-    "@solana/web3.js": "^1.95.0"
+    "@solana/web3.js": "^1.95.0",
+    "@types/node": "^22.9.0",
+    "typescript": "^5.6.0"
   }
 }
