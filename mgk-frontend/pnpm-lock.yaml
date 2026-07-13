@@ -11,6 +11,10 @@ overrides:
 importers:
 
   .:
+    dependencies:
+      next:
+        specifier: 16.2.9
+        version: 16.2.9(@babel/core@7.29.7)(@playwright/test@1.61.0)(react-dom@19.2.4)(react@19.2.4)
     devDependencies:
       tsx:
         specifier: ^4.19.0
@@ -27,6 +31,15 @@ importers:
       '@solana/web3.js':
         specifier: ^1.95.8
         version: 1.95.8
+      '@types/better-sqlite3':
+        specifier: ^7.6.11
+        version: 7.6.13
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.19.21
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
       better-sqlite3:
         specifier: ^11.5.0
         version: 11.10.0
@@ -39,25 +52,16 @@ importers:
       pino:
         specifier: ^9.5.0
         version: 9.14.0
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
       ws:
         specifier: ^8.18.0
         version: 8.21.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
     devDependencies:
-      '@types/better-sqlite3':
-        specifier: ^7.6.11
-        version: 7.6.13
-      '@types/node':
-        specifier: ^22.9.0
-        version: 22.19.21
-      '@types/ws':
-        specifier: ^8.5.13
-        version: 8.18.1
       tsx:
         specifier: ^4.19.0
         version: 4.22.4
-      typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
       vitest:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.19.21)
@@ -5409,7 +5413,7 @@ packages:
     resolution: {integrity: sha512-NMv9ASNARoKksWtsq/SHakpYAYnhBrQgGD8zkLYk/jaK8jUGn08CfEdTRgYhMypUQAfzSP8W6gNLe0q19/t4VA==}
     dependencies:
       '@types/node': 22.19.21
-    dev: true
+    dev: false
 
   /@types/connect@3.4.38:
     resolution: {integrity: sha512-K6uROf1LD88uDQqJCktA4yzL1YYAK6NgfsI0v/mTgyPKWsX1CnJ0XPSDhViejru1GcRkLWb8RlzFYJRqGUbaug==}
@@ -5503,6 +5507,7 @@ packages:
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
     dependencies:
       '@types/node': 22.19.21
+    dev: false
 
   /@types/yargs-parser@21.0.3:
     resolution: {integrity: sha512-I4q9QU9MQv4oEOz4tAHJtNz1cwuLxn2F3xcc2iV5WdqLPpUnj30aUuxt1mAxYTG+oe8CZMV/+6rU4S4gRDzqtQ==}
