@@ -207,6 +207,13 @@ export function useCommitOrder() {
           );
         }
 
+        const currentSlot = await connection.getSlot();
+        if (BigInt(currentSlot) >= batch.commitDeadlineSlot) {
+          throw new Error(
+            'Commit deadline passed. Wait for the keeper to open a new batch.',
+          );
+        }
+
         const salt = randomSalt();
         const sideByte = params.side === 'buy' ? sdk.Side.Buy : sdk.Side.Sell;
 
