@@ -156,9 +156,37 @@ The protocol checks passed during the `.data.S` scratch experiment, but the expe
 - Verify order book/open orders/trade history reflect the result.
 - Reload page and confirm no stale localStorage state from the prior wallet/batch.
 
+## Manual Devnet Verification - 2026-07-14 Production Stability
+
+Environment:
+
+- Frontend: https://mgk-frontend-ri46evt8s-gadillacers-projects.vercel.app (preview)
+- Indexer: https://mgk-indexer.onrender.com
+- RPC: Helius devnet (`https://devnet.helius-rpc.com/?api-key=...`)
+- Registry: `F7zWN2XrVqNDBBYqsYpgxHa6AuPK1aQE33kHwM4f8ayV`
+
+Manual checks:
+
+- `/api/batch/current` returns RPC-backed batch JSON with `batchAddress`, `batchId`, `phase` (confirmed `source: "rpc"`)
+- `/api/healthz` returns `{ ok: true }`
+- Build output contains `indexerUrl:"https://mgk-indexer.onrender.com"` (Turbopack env var inlining confirmed)
+- `.vercelignore` scoped `programs/` to repo root (SDK `src/programs/` no longer excluded)
+- Batch #107 stuck in Committing (deadline passed 1.6M slots ago) — keeper needs `KEEPER_KEYPAIR` env var on Render to sign `CloseCommitting`
+
+Verified commands:
+
+```sh
+pnpm -F web test -- --run  # 436/436 pass
+pnpm -F web typecheck       # clean
+pnpm -F @mgk/sdk build      # clean
+pnpm -F indexer build        # clean
+```
+
 ## Known Testing Gaps
 
 - No automated wallet-extension E2E yet. Playwright can load the app and inspect console/UI, but approving Phantom/Solflare still requires either extension automation or manual signing.
 - No local-validator fixture that reproduces keypair-owned registry/batch/book accounts.
 - No protocol-level test for zero-reveal batch recovery; current fix is keeper-side operational recovery.
 - `onchain-perps-dex` testing inventory is stale relative to the current 322 Rust test count.
+- Indexer `/api/markets/0/state` returns 404 when no fills are indexed (market_state table empty).
+- Vercel production deploy via `vercel promote` broken (repo root has no `next`); workaround is `vercel deploy --prod` from `mgk-frontend/`.

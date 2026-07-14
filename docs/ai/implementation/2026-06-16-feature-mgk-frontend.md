@@ -160,3 +160,45 @@ cargo build-sbf
 ```
 
 `cargo test -p mgk-perps-matcher` (88 passed) and `cargo build-sbf` (clean, no writable data sections) are now production-verified on devnet: batch #14 settled successfully with the heap-allocated matcher.
+
+## Implementation Update - 2026-07-14 Production Stability
+
+### Problem
+
+After deploying to Vercel (frontend) and Render (indexer), multiple production issues surfaced: `localhost:4000` hardcoded in the production JS bundle, Vercel build failures from `.vercelignore`, 429 rate limits from devnet RPC, keeper unable to close batches on Render, and "committing past deadline" errors.
+
+### Changes Shipped
+
+| Area | Files | Change |
+|---|---|---|
+| Turbopack env var fix | `apps/web/lib/config.ts` | Replaced `readEnv(name, fallback)` wrapper (dynamic `process.env[name]` lookup) with direct `process.env.NEXT_PUBLIC_*` access. Turbopack can statically replace direct property access but not dynamic lookups. |
+| Vercel build fix | `.vercelignore` | Changed `programs/` to `/programs/` — bare pattern matched any `programs/` directory at any depth, excluding `mgk-frontend/packages/sdk/src/programs/` from the build. |
+| Indexer batch trust | `apps/web/lib/onchainAccounts.ts` | `fetchIndexerBatchAddress` now returns the indexer's batch address regardless of batch ID mismatch. The indexer tracks the keeper's keypair batch directly; the registry counter may race during transitions. |
+| RPC batching | `apps/web/lib/hooks/useOrderSubmission.ts` | Combined registry + portfolio `getAccountInfo` into single `getMultipleAccountsInfo` call. Commit flow: 3 RPC calls → 2. |
+| Polling intervals | `useSlotPolling.ts`, `useBatchStore.ts`, `useBookStore.ts`, `usePortfolioStore.ts` | Slot: 1s→3s, Batch: 3s→5s, Book: 3s→5s, Portfolio: 3s→5s. Peak RPC load: ~5 calls/sec → ~2 calls/sec. |
+| Indexer cache | `apps/indexer/src/rest/routes.ts` | `/api/batch/current` cache TTL: 5s→30s. 5/6 frontend requests now hit cache instead of RPC. |
+| Keeper poll | `apps/indexer/src/main.ts` | Keeper poll interval: 2s→5s. Halves keeper RPC calls. |
+| Helius RPC | Vercel `NEXT_PUBLIC_RPC_URL`, Render `RPC_URL` | Both set to `https://devnet.helius-rpc.com/?api-key=...` (10 RPS free tier). Replaces dead QuickNode and rate-limited public devnet. |
+| Keeper keypair env var | `apps/indexer/src/keeper.ts` | Added `KEEPER_KEYPAIR` env var — JSON array of secret key bytes. Render's ephemeral filesystem loses `~/.config/solana/id.json` on every redeploy. Falls back to file if env var not set. |
+| Vercel production deploy | N/A | `vercel promote` fails (rebuilds from repo root, no `next` package). Use `vercel deploy --prod` from `mgk-frontend/` directory instead. |
+
+### Reverted: Commit Deadline Check
+
+Added `getSlot()` check against `batch.commitDeadlineSlot` in commit flow, then removed. The on-chain `commit_order` does NOT check the deadline — it only checks `batch.status == Committing`. The keeper closes the batch when `past_deadline || enough_commitments`. If `nMin` isn't met, the batch stays Committing past deadline and still accepts commits. Frontend was rejecting valid commits the chain would accept.
+
+### Remaining Issues
+
+| Issue | Severity | Status |
+|---|---|---|
+| Keeper not closing batch #107 (deadline passed 1.6M slots ago) | **High** | `KEEPER_KEYPAIR` env var deployed on Render; needs verification in Render logs that keeper can sign `CloseCommitting` |
+| `/api/markets/0/state` returns 404 | Medium | Market state reads from SQLite; no fills indexed yet |
+| `vercel promote` broken | Low | Workaround: `vercel deploy --prod` from `mgk-frontend/` |
+
+### Verified Commands
+
+```sh
+pnpm -F web test -- --run  # 436/436 pass
+pnpm -F web typecheck       # clean
+pnpm -F @mgk/sdk build      # clean
+pnpm -F indexer build        # clean
+```
