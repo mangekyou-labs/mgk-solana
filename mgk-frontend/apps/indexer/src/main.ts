@@ -124,7 +124,7 @@ async function main(): Promise<void> {
     app.log.info('subscriber started');
 
     // Start the keeper loop (runs in same process, shares Connection + store)
-    const KEEPER_POLL_MS = Number(process.env.KEEPER_POLL_MS ?? 2_000);
+    const KEEPER_POLL_MS = Number(process.env.KEEPER_POLL_MS ?? 5_000);
     const ORACLE_POLL_MS = Number(process.env.ORACLE_POLL_MS ?? 10_000);
     const ORACLE_PID = process.env.ORACLE_PROGRAM_ID ?? '6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA';
     app.log.info({ REGISTRY_ADDRESS, CORE_PROGRAM_ID }, 'starting keeper');

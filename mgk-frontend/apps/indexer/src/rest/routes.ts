@@ -236,7 +236,7 @@ export async function batchRoutes(
 
     if (connection && coreProgramId) {
       const now = Date.now();
-      if (cachedLiveBatch && now - cachedLiveBatchAt < 5000) {
+      if (cachedLiveBatch && now - cachedLiveBatchAt < 30_000) {
         return cachedLiveBatch;
       }
 
