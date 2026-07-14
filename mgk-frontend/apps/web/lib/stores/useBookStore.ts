@@ -102,7 +102,7 @@ export const useBookStore = create<BookStore>((set, get) => ({
 export function useBookTopN(
   instrumentId: number,
   depth = 20,
-  intervalMs = 3000,
+  intervalMs = 5000,
 ): {
   bids: BookLevel[];
   asks: BookLevel[];

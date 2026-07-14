@@ -156,7 +156,7 @@ export const useBatchStore = create<BatchStore>((set, get) => ({
  * Batch state is global (not user-scoped) so this hook needs no wallet deps —
  * it kicks off polling as soon as the connection is available.
  */
-export function useBatchPolling(intervalMs = 3000): {
+export function useBatchPolling(intervalMs = 5000): {
   data: BatchState | null;
   registry: RegistryState | null;
   currentBatchId: bigint | null;

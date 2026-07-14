@@ -80,7 +80,7 @@ export const useSlotStore = create<SlotStore>((set, get) => ({
  * Default 1000ms — fast enough for a live countdown, slow enough to
  * stay well under public devnet RPC rate limits.
  */
-export function useSlotPolling(intervalMs = 1000): {
+export function useSlotPolling(intervalMs = 3000): {
   slot: number | null;
   loading: boolean;
   error: string | null;

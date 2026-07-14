@@ -108,7 +108,7 @@ export const usePortfolioStore = create<PortfolioStore>((set, get) => ({
  * - When the wallet disconnects, polling stops.
  * - Returns the live store state for components to render.
  */
-export function usePortfolioPolling(intervalMs = 3000): {
+export function usePortfolioPolling(intervalMs = 5000): {
   data: PortfolioState | null;
   loading: boolean;
   error: string | null;
