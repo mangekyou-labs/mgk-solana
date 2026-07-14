@@ -31,11 +31,12 @@ export async function fetchIndexerBatchAddress(
     if (!res.ok) return null;
 
     const body = (await res.json()) as Record<string, unknown>;
-    const batchId = parseBatchId(body.batchId ?? body.batch_id);
     const batchAddress = body.batchAddress ?? body.batch_address;
-    if (batchId !== expectedBatchId || typeof batchAddress !== 'string') {
-      return null;
-    }
+    if (typeof batchAddress !== 'string') return null;
+
+    // Trust the indexer's batch address even when batch IDs diverge.  The
+    // indexer tracks the keeper's keypair-based batch directly; the registry
+    // counter may race ahead during SettleBatch → CreateBatch transitions.
     return new PublicKey(batchAddress);
   } catch {
     return null;

@@ -169,10 +169,24 @@ export function useCommitOrder() {
         // Re-fetch registry for live batch_id — the store may be stale by
         // the time the user clicks Buy (batch transitioned to Revealing).
         const registryPda = resolveRegistryAddress(config.coreProgramId);
-        const registryAcc = await connection.getAccountInfo(registryPda);
+        const [portfolioPda] = sdk.derivePortfolioPda(
+          publicKey,
+          config.coreProgramId,
+        );
+
+        // Batch registry + portfolio into a single RPC call to reduce
+        // rate-limit pressure on the devnet endpoint.
+        const [registryAcc, portfolioAcc] =
+          await connection.getMultipleAccountsInfo([registryPda, portfolioPda]);
         if (!registryAcc) {
           throw new Error('Registry not found on-chain. Is the program deployed?');
         }
+        if (!portfolioAcc) {
+          throw new Error(
+            'Portfolio not found. Click Set Up Account first and wait for the keeper to create it.',
+          );
+        }
+
         const registry = sdk.state.decodeRegistry(new Uint8Array(registryAcc.data));
         const batchId = activeBatchIdFromCounter(registry.batchIdCounter);
 
@@ -215,18 +229,6 @@ export function useCommitOrder() {
           config.coreProgramId,
         );
         pendingCommit = { batchId, hash, salt, commitmentPda };
-
-        const [portfolioPda] = sdk.derivePortfolioPda(
-          publicKey,
-          config.coreProgramId,
-        );
-
-        const portfolioAcc = await connection.getAccountInfo(portfolioPda);
-        if (!portfolioAcc) {
-          throw new Error(
-            'Portfolio not found. Click Set Up Account first and wait for the keeper to create it.',
-          );
-        }
 
         const ixData = sdk.programs.encodeCommitOrder({
           orderType: sdk.state.OrderType.LimitGTC,
