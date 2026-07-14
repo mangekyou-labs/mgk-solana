@@ -2,7 +2,7 @@
 
 **Commit-reveal CLOB on Solana · Pinocchio / no_std · sequencer-free · MEV-mitigated**
 
-Repository: https://github.com/aeyakovenko/percolator
+Repository: https://github.com/mangekyou-labs/mgk-solana
 Devnet programs: perps-core, perps-matcher, oracle (all executable — see [Verify](#how-to-verify))
 Design source of truth: `docs/ai/design/feature-onchain-perps-dex.md`
 

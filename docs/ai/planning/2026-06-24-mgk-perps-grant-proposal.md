@@ -12,7 +12,7 @@ description: Fully on-chain perps DEX on Solana — commit-reveal CLOB, ~2-4s la
 
 | | |
 |---|---|
-| **Repository** | https://github.com/aeyakovenko/percolator |
+| **Repository** | https://github.com/mangekyou-labs/mgk-solana |
 | **Architecture doc** | [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) — commit-reveal CLOB design, batch lifecycle, safety stack, worked examples |
 | **Devnet (core)** | `3jYQ4mpWBBtwrzYQ4zzKhgqVcWWsG2HpXi9oXTBpekja` — [explorer](https://explorer.solana.com/address/3jYQ4mpWBBtwrzYQ4zzKhgqVcWWsG2HpXi9oXTBpekja?cluster=devnet) ✅ Executable |
 | **Devnet (matcher)** | `AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF` — [explorer](https://explorer.solana.com/address/AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF?cluster=devnet) ✅ Executable |
@@ -346,7 +346,7 @@ mgk Protocol is led by a name of the founder or pseudonymous team. _[TODO: name,
 
 **Proof of work (substitutes for team breadth at pre-beta stage):**
 
-- **GitHub:** https://github.com/aeyakovenko/percolator
+- **GitHub:** https://github.com/mangekyou-labs/mgk-solana
 - **Devnet deploys:** 3 programs live and executable (core `3jYQ4mpW…`, matcher `AU4EKQAQ…`, oracle `6M9eEiDK…`)
 - **On-chain verified:** ClearBatch (slot 473186843) + SettleBatch (slot 473187751), `err: None`
 - **Tests:** 954 passing — 322 Rust + 632 frontend
@@ -359,7 +359,7 @@ Single-founder / pseudonymous teams are not disqualified — the proposal's subs
 
 ## How to verify
 
-- **Repo + git history:** https://github.com/aeyakovenko/percolator (`git log --oneline`)
+- **Repo + git history:** https://github.com/mangekyou-labs/mgk-solana (`git log --oneline`)
 - **Design doc:** `docs/ai/design/feature-onchain-perps-dex.md` · **Requirements:** `docs/ai/requirements/2026-06-18-feature-onchain-perps-dex.md` · **Implementation report:** `docs/ai/implementation/2026-07-03-feature-onchain-perps-dex.md`
 - **Devnet explorer (core):** https://explorer.solana.com/address/3jYQ4mpWBBtwrzYQ4zzKhgqVcWWsG2HpXi9oXTBpekja?cluster=devnet
 - **Devnet explorer (matcher):** https://explorer.solana.com/address/AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF?cluster=devnet
