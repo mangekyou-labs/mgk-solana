@@ -1123,16 +1123,27 @@ export function startKeeper(params: StartKeeperParams): void {
   } = params;
 
   const HOME_DIR = process.env.HOME ?? '/root';
-  const keypairPath = join(HOME_DIR, '.config', 'solana', 'id.json');
 
   let keypair: Keypair;
-  try {
-    const raw = JSON.parse(readFileSync(keypairPath, 'utf8'));
-    keypair = Keypair.fromSecretKey(Buffer.from(raw));
-    console.log(`Keeper: ${keypair.publicKey.toBase58()}`);
-  } catch {
-    console.error(`ERROR: Could not load keypair from ${keypairPath}`);
-    return;
+  if (process.env.KEEPER_KEYPAIR) {
+    try {
+      const raw = JSON.parse(process.env.KEEPER_KEYPAIR);
+      keypair = Keypair.fromSecretKey(Uint8Array.from(raw));
+      console.log(`Keeper (from env): ${keypair.publicKey.toBase58()}`);
+    } catch {
+      console.error('ERROR: KEEPER_KEYPAIR env var is not valid JSON array of bytes');
+      return;
+    }
+  } else {
+    const keypairPath = join(HOME_DIR, '.config', 'solana', 'id.json');
+    try {
+      const raw = JSON.parse(readFileSync(keypairPath, 'utf8'));
+      keypair = Keypair.fromSecretKey(Buffer.from(raw));
+      console.log(`Keeper (from file): ${keypair.publicKey.toBase58()}`);
+    } catch {
+      console.error(`ERROR: Could not load keypair from ${keypairPath} and KEEPER_KEYPAIR not set`);
+      return;
+    }
   }
 
   // Load persisted batch keypair (survives keeper restarts)
