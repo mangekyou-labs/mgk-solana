@@ -34,11 +34,6 @@ const DEVNET_DEFAULTS = {
   pythSolFeedId: 'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
 } as const;
 
-function readEnv(name: string, fallback: string): string {
-  const raw = process.env[name];
-  return raw && raw.length > 0 ? raw : fallback;
-}
-
 function parsePkOrThrow(raw: string, envName: string): PublicKey {
   try {
     return new PublicKey(raw);
@@ -49,29 +44,34 @@ function parsePkOrThrow(raw: string, envName: string): PublicKey {
   }
 }
 
-const rpcUrl = readEnv('NEXT_PUBLIC_RPC_URL', DEVNET_DEFAULTS.rpcUrl);
+// Each NEXT_PUBLIC_* var must be accessed via a direct process.env property
+// read (not through a wrapper function) so that Turbopack can statically
+// replace them at build time.  Dynamic lookups like process.env[name] are
+// not statically analysable and fall through to a runtime polyfill that
+// returns undefined — causing the fallback to always win.
+const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || DEVNET_DEFAULTS.rpcUrl;
 const coreProgramId = parsePkOrThrow(
-  readEnv('NEXT_PUBLIC_CORE_PROGRAM_ID', DEVNET_DEFAULTS.coreProgramId),
+  process.env.NEXT_PUBLIC_CORE_PROGRAM_ID || DEVNET_DEFAULTS.coreProgramId,
   'NEXT_PUBLIC_CORE_PROGRAM_ID',
 );
 const matcherProgramId = parsePkOrThrow(
-  readEnv('NEXT_PUBLIC_MATCHER_PROGRAM_ID', DEVNET_DEFAULTS.matcherProgramId),
+  process.env.NEXT_PUBLIC_MATCHER_PROGRAM_ID || DEVNET_DEFAULTS.matcherProgramId,
   'NEXT_PUBLIC_MATCHER_PROGRAM_ID',
 );
 const oracleProgramId = parsePkOrThrow(
-  readEnv('NEXT_PUBLIC_ORACLE_PROGRAM_ID', DEVNET_DEFAULTS.oracleProgramId),
+  process.env.NEXT_PUBLIC_ORACLE_PROGRAM_ID || DEVNET_DEFAULTS.oracleProgramId,
   'NEXT_PUBLIC_ORACLE_PROGRAM_ID',
 );
-const bookAddressRaw = readEnv('NEXT_PUBLIC_BOOK_ADDRESS', DEVNET_DEFAULTS.bookAddress ?? '');
+const bookAddressRaw = process.env.NEXT_PUBLIC_BOOK_ADDRESS || DEVNET_DEFAULTS.bookAddress || '';
 const bookAddress = bookAddressRaw ? parsePkOrThrow(bookAddressRaw, 'NEXT_PUBLIC_BOOK_ADDRESS') : null;
-const vaultAddressRaw = readEnv('NEXT_PUBLIC_VAULT_ADDRESS', DEVNET_DEFAULTS.vaultAddress ?? '');
+const vaultAddressRaw = process.env.NEXT_PUBLIC_VAULT_ADDRESS || DEVNET_DEFAULTS.vaultAddress || '';
 const vaultAddress = vaultAddressRaw ? parsePkOrThrow(vaultAddressRaw, 'NEXT_PUBLIC_VAULT_ADDRESS') : null;
-const registryAddressRaw = readEnv('NEXT_PUBLIC_REGISTRY_ADDRESS', DEVNET_DEFAULTS.registryAddress ?? '');
+const registryAddressRaw = process.env.NEXT_PUBLIC_REGISTRY_ADDRESS || DEVNET_DEFAULTS.registryAddress || '';
 const registryAddress = registryAddressRaw ? parsePkOrThrow(registryAddressRaw, 'NEXT_PUBLIC_REGISTRY_ADDRESS') : null;
-const batchAddressRaw = readEnv('NEXT_PUBLIC_BATCH_ADDRESS', DEVNET_DEFAULTS.batchAddress ?? '');
+const batchAddressRaw = process.env.NEXT_PUBLIC_BATCH_ADDRESS || DEVNET_DEFAULTS.batchAddress || '';
 const batchAddress = batchAddressRaw ? parsePkOrThrow(batchAddressRaw, 'NEXT_PUBLIC_BATCH_ADDRESS') : null;
-const indexerUrl = readEnv('NEXT_PUBLIC_INDEXER_URL', DEVNET_DEFAULTS.indexerUrl);
-const hermesUrl = readEnv('NEXT_PUBLIC_HERMES_URL', DEVNET_DEFAULTS.hermesUrl);
+const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || DEVNET_DEFAULTS.indexerUrl;
+const hermesUrl = process.env.NEXT_PUBLIC_HERMES_URL || DEVNET_DEFAULTS.hermesUrl;
 
 export const config = {
   rpcUrl,
