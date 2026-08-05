@@ -7,11 +7,16 @@ pub const MAX_COMMITMENTS: usize = 500;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchStatus {
+    /// Open collection window (DFBA posts accepted). Alias historical name.
     Committing = 0,
+    /// @deprecated DFBA skips reveal; kept for layout/compat.
     Revealing = 1,
     Clearing = 2,
     Settled = 3,
 }
+
+/// Alias used in DFBA docs: collecting == committing.
+pub type Collecting = BatchStatus;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -22,7 +27,9 @@ pub struct Batch {
     pub commit_deadline_slot: u64,
     pub reveal_deadline_slot: u64,
     pub close_slot: u64,
+    /// Historical shuffle seed; unused in DFBA (zeroed on open).
     pub shuffle_seed: u64,
+    /// DFBA mid mark when both auctions clear; else 0.
     pub clearing_price: i64,
     pub total_commitments: u32,
     pub total_revealed: u32,
@@ -32,6 +39,16 @@ pub struct Batch {
     pub slashed_deposits: u128,
     pub bump: u8,
     pub _padding: [u8; 7],
+    // --- DFBA fields (appended; account size must cover these) ---
+    pub bid_clearing_price: i64,
+    pub ask_clearing_price: i64,
+    pub matched_bid_qty: u64,
+    pub matched_ask_qty: u64,
+    /// 1 if both auctions produced a clear this batch.
+    pub mark_valid: u8,
+    /// 1 if liquidations must pause (no dual clear).
+    pub liq_paused: u8,
+    pub _dfba_pad: [u8; 6],
 }
 
 #[repr(u8)]
@@ -110,30 +127,37 @@ impl Batch {
         self.slashed_deposits = 0;
         self.bump = bump;
         self._padding = [0; 7];
+        self.bid_clearing_price = 0;
+        self.ask_clearing_price = 0;
+        self.matched_bid_qty = 0;
+        self.matched_ask_qty = 0;
+        self.mark_valid = 0;
+        self.liq_paused = 1; // no dual clear yet
+        self._dfba_pad = [0; 6];
+    }
+
+    /// DFBA mark mid when both auctions cleared.
+    pub fn dfba_mark_mid(&self) -> Option<i64> {
+        if self.mark_valid != 0 {
+            Some(
+                self.bid_clearing_price / 2
+                    + self.ask_clearing_price / 2
+                    + (self.bid_clearing_price % 2 + self.ask_clearing_price % 2) / 2,
+            )
+        } else {
+            None
+        }
     }
 
     #[cfg(test)]
     pub fn new(batch_id: u64) -> Self {
-        let mut b = Self {
-            batch_id,
-            status: BatchStatus::Committing,
-            _pad_status: [0; 7],
-            commit_deadline_slot: 0,
-            reveal_deadline_slot: 0,
-            close_slot: 0,
-            shuffle_seed: 0,
-            clearing_price: 0,
-            total_commitments: 0,
-            total_revealed: 0,
-            total_settled: 0,
-            total_volume: 0,
-            total_notional: 0,
-            slashed_deposits: 0,
-            bump: 0,
-            _padding: [0; 7],
-        };
-        b.initialize_in_place(batch_id, 0, 0, 0);
-        b
+        let mut b = core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            core::ptr::write_bytes(b.as_mut_ptr(), 0, 1);
+            let b_mut = &mut *b.as_mut_ptr();
+            b_mut.initialize_in_place(batch_id, 0, 0, 0);
+            b.assume_init()
+        }
     }
 }
 
@@ -230,6 +254,55 @@ mod tests {
         assert_eq!(b.total_commitments, 0);
         assert_eq!(b.close_slot, 0);
         assert_eq!(b.shuffle_seed, 0);
+        assert_eq!(b.mark_valid, 0);
+        assert_eq!(b.liq_paused, 1);
+        assert_eq!(b.bid_clearing_price, 0);
+        assert_eq!(b.ask_clearing_price, 0);
+    }
+
+    #[test]
+    fn test_batch_size_matches_sdk() {
+        // mgk-frontend packages/sdk BATCH_SIZE = 160 after DFBA fields.
+        assert_eq!(core::mem::size_of::<Batch>(), 160);
+    }
+
+    #[test]
+    fn test_dfba_mark_mid_none_when_invalid() {
+        let b = Batch::new(1);
+        assert!(b.dfba_mark_mid().is_none());
+    }
+
+    #[test]
+    fn test_dfba_mark_mid_average() {
+        let mut b = Batch::new(2);
+        b.bid_clearing_price = 100;
+        b.ask_clearing_price = 110;
+        b.mark_valid = 1;
+        assert_eq!(b.dfba_mark_mid(), Some(105));
+    }
+
+    #[test]
+    fn test_dfba_close_then_clear_field_writes() {
+        // Simulates CloseCollecting → ClearBatch field writes (no syscall).
+        let mut b = Batch::new(3);
+        b.status = BatchStatus::Committing;
+        b.commit_deadline_slot = 0;
+        // close
+        b.status = BatchStatus::Clearing;
+        b.close_slot = 999;
+        b.liq_paused = 1;
+        b.mark_valid = 0;
+        // clear dual
+        b.bid_clearing_price = 1_000;
+        b.ask_clearing_price = 1_010;
+        b.matched_bid_qty = 10;
+        b.matched_ask_qty = 10;
+        b.mark_valid = 1;
+        b.liq_paused = 0;
+        b.clearing_price = 1_005;
+        assert_eq!(b.status, BatchStatus::Clearing);
+        assert_eq!(b.dfba_mark_mid(), Some(1_005));
+        assert_eq!(b.liq_paused, 0);
     }
 
     #[test]
@@ -269,3 +342,4 @@ mod tests {
         assert_eq!(decoded.reduce_only, ro.reduce_only);
     }
 }
+

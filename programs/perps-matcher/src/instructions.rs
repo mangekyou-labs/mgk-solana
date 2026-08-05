@@ -2,9 +2,8 @@ use crate::state::{
     book_state_from_bytes_mut, cancel_all_for_user, cancel_resting_by_id,
     clob_match_with_caps_into, clob_match_with_risk_into, compute_clearing_into,
     default_risk_check, modify_resting_qty, place_resting, separate_priority_queues,
-    shuffle_orders, FillReceipt, LimitOrder, OrderType, PartitionedOrders,
-    Side, MatchResult,
-    MAX_FILLS_PER_BATCH, MAX_ORDERS,
+    shuffle_orders, FillReceipt, LimitOrder, OrderType, PartitionedOrders, Side, MatchResult,
+    MAX_FILLS_PER_BATCH, MAX_ORDERS, DFBA_MAX_ORDERS, DfbaOrder, DualClearScratch,
 };
 use crate::state::clearing::{BuyEntry, SellEntry};
 use core::alloc::Layout;
@@ -227,6 +226,7 @@ pub fn process_compute_clearing(
             qty,
             reduce_only,
             cancel_order_id: 0,
+        is_maker: false,
         };
     }
 
@@ -300,6 +300,593 @@ fn write_results(
         data[offset + 40..offset + 48].copy_from_slice(&fill.notional.to_le_bytes());
     }
 
+    Ok(())
+}
+
+// =============================================================================
+// DFBA clear (disc 5) — dual uniform-price auctions
+// =============================================================================
+//
+// Wire format (after disc):
+//   marginal_size_cap: u64 LE (8)
+//   num_orders: u16 LE (2)
+//   for each order (58 bytes):
+//     side: u8 (0=Buy, 1=Sell)
+//     is_maker: u8 (0=taker, 1=maker)
+//     price: i64 LE
+//     qty: u64 LE
+//     order_id: u64 LE
+//     user: Pubkey (32)
+//
+// Results account layout:
+//   bid_clearing_price: i64 (8)
+//   ask_clearing_price: i64 (8)
+//   matched_bid_qty: u64 (8)
+//   matched_ask_qty: u64 (8)
+//   num_fills: u16 (2)
+//   fills[] each 51 bytes:
+//     user: 32, order_id: 8, fill_qty: 8, fill_price: 8, is_maker: 1, auction: 1
+//       auction: 0=Bid, 1=Ask
+
+/// Bytes per DFBA input order in instruction data.
+pub const DFBA_ORDER_WIRE_BYTES: usize = 58;
+/// Header before orders: marginal_size_cap(8) + num_orders(2).
+pub const DFBA_IX_HEADER_BYTES: usize = 10;
+/// Header of results account before fill array.
+pub const DFBA_RESULT_HEADER_BYTES: usize = 34;
+/// Bytes per fill in results account.
+pub const DFBA_FILL_WIRE_BYTES: usize = 58;
+
+/// Dual Flow Batch Auction clear.
+///
+/// Accounts:
+/// 0. `[writable]` Results account
+/// 1. `[writable]` Book account (optional if orders supplied in data; required
+///    when `num_orders == 0` to collect resting orders)
+///
+/// When `num_orders > 0`, orders are read from instruction data.
+/// When `num_orders == 0` and book is present, resting book is collected.
+/// After clear, filled qty is applied to resting orders on the book (if book present).
+#[inline(never)]
+pub fn process_dfba_clear(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    if accounts.is_empty() {
+        msg!("Error: DfbaClear requires results account");
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    let results_account = &accounts[0];
+    if !results_account.is_writable() {
+        msg!("Error: Results account must be writable");
+        return Err(ProgramError::InvalidAccountData);
+    }
+    if data.len() < DFBA_IX_HEADER_BYTES {
+        msg!("Error: DfbaClear data too short");
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    let marginal_size_cap = u64::from_le_bytes(
+        data[0..8]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
+    let num_orders = u16::from_le_bytes([data[8], data[9]]) as usize;
+    if num_orders > DFBA_MAX_ORDERS {
+        msg!("Error: DfbaClear too many orders");
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    // One contiguous 4-region order buffer (single heap alloc — less waste
+    // than four separate arrays under the 32 KiB default heap).
+    // Regions: [0)=maker_buy, [1)=maker_sell, [2)=taker_buy, [3)=taker_sell
+    const REGIONS: usize = 4;
+    let order_buf = heap_array_fixed::<DfbaOrder, { DFBA_MAX_ORDERS * REGIONS }>()?;
+    let (left, right) = order_buf.split_at_mut(DFBA_MAX_ORDERS * 2);
+    let (maker_buys, maker_sells) = left.split_at_mut(DFBA_MAX_ORDERS);
+    let (taker_buys, taker_sells) = right.split_at_mut(DFBA_MAX_ORDERS);
+    let mut n_mb = 0usize;
+    let mut n_ms = 0usize;
+    let mut n_tb = 0usize;
+    let mut n_ts = 0usize;
+
+    let push = |order: DfbaOrder,
+                is_maker: bool,
+                side: Side,
+                mb: &mut [DfbaOrder],
+                ms: &mut [DfbaOrder],
+                tb: &mut [DfbaOrder],
+                ts: &mut [DfbaOrder],
+                n_mb: &mut usize,
+                n_ms: &mut usize,
+                n_tb: &mut usize,
+                n_ts: &mut usize|
+     -> Result<(), ProgramError> {
+        if order.size == 0 {
+            return Ok(());
+        }
+        match (is_maker, side) {
+            (true, Side::Buy) if *n_mb < DFBA_MAX_ORDERS => {
+                mb[*n_mb] = order;
+                *n_mb += 1;
+            }
+            (true, Side::Sell) if *n_ms < DFBA_MAX_ORDERS => {
+                ms[*n_ms] = order;
+                *n_ms += 1;
+            }
+            (false, Side::Buy) if *n_tb < DFBA_MAX_ORDERS => {
+                tb[*n_tb] = order;
+                *n_tb += 1;
+            }
+            (false, Side::Sell) if *n_ts < DFBA_MAX_ORDERS => {
+                ts[*n_ts] = order;
+                *n_ts += 1;
+            }
+            // Region full or unknown side: drop overflow (hard per-side cap).
+            _ => {}
+        }
+        Ok(())
+    };
+
+    if num_orders > 0 {
+        let expected = DFBA_IX_HEADER_BYTES
+            .checked_add(
+                num_orders
+                    .checked_mul(DFBA_ORDER_WIRE_BYTES)
+                    .ok_or(ProgramError::InvalidInstructionData)?,
+            )
+            .ok_or(ProgramError::InvalidInstructionData)?;
+        if data.len() < expected {
+            return Err(ProgramError::InvalidInstructionData);
+        }
+        for i in 0..num_orders {
+            let off = DFBA_IX_HEADER_BYTES + i * DFBA_ORDER_WIRE_BYTES;
+            let side = Side::from_u8(data[off]).ok_or(ProgramError::InvalidInstructionData)?;
+            let is_maker = data[off + 1] != 0;
+            let price = i64::from_le_bytes(
+                data[off + 2..off + 10]
+                    .try_into()
+                    .map_err(|_| ProgramError::InvalidInstructionData)?,
+            );
+            let qty = u64::from_le_bytes(
+                data[off + 10..off + 18]
+                    .try_into()
+                    .map_err(|_| ProgramError::InvalidInstructionData)?,
+            );
+            let order_id = u64::from_le_bytes(
+                data[off + 18..off + 26]
+                    .try_into()
+                    .map_err(|_| ProgramError::InvalidInstructionData)?,
+            );
+            let user = Pubkey::from(
+                <[u8; 32]>::try_from(&data[off + 26..off + 58])
+                    .map_err(|_| ProgramError::InvalidInstructionData)?,
+            );
+            push(
+                DfbaOrder {
+                    price,
+                    size: qty,
+                    order_id,
+                    user,
+                },
+                is_maker,
+                side,
+                maker_buys,
+                maker_sells,
+                taker_buys,
+                taker_sells,
+                &mut n_mb,
+                &mut n_ms,
+                &mut n_tb,
+                &mut n_ts,
+            )?;
+        }
+    } else if accounts.len() >= 2 {
+        // Collect from book resting orders.
+        let book_account = &accounts[1];
+        if book_account.owner() != program_id {
+            return Err(ProgramError::IllegalOwner);
+        }
+        let mut book_data = book_account.try_borrow_mut_data()?;
+        let state = book_state_from_bytes_mut(&mut book_data)?;
+        for i in 0..state.resting_count {
+            let r = &state.resting[i];
+            let rem = r.qty.saturating_sub(r.filled_qty);
+            if rem == 0 || r.order_id == u64::MAX {
+                continue;
+            }
+            push(
+                DfbaOrder {
+                    price: r.price,
+                    size: rem,
+                    order_id: r.order_id,
+                    user: r.user,
+                },
+                r.is_maker,
+                r.side,
+                maker_buys,
+                maker_sells,
+                taker_buys,
+                taker_sells,
+                &mut n_mb,
+                &mut n_ms,
+                &mut n_tb,
+                &mut n_ts,
+            )?;
+        }
+    } else {
+        write_dfba_empty_result(results_account)?;
+        return Ok(());
+    }
+
+    // Sequential bid→ask: one AllocationResult at a time (DualAuctionResult
+    // alone is ~14KB and blows the default 32KB heap with order_buf+scratch).
+    let scratch = heap_value::<DualClearScratch>()?;
+    let alloc_out = heap_value::<crate::state::AllocationResult>()?;
+
+    let mut bid_price: i64 = 0;
+    let mut ask_price: i64 = 0;
+    let mut matched_bid: u64 = 0;
+    let mut matched_ask: u64 = 0;
+    let mut fill_count: u16 = 0;
+
+    // Zero results header; fills written as we go.
+    {
+        let mut rd = results_account.try_borrow_mut_data()?;
+        if rd.len() < DFBA_RESULT_HEADER_BYTES {
+            return Err(ProgramError::AccountDataTooSmall);
+        }
+        rd[..DFBA_RESULT_HEADER_BYTES].fill(0);
+    }
+
+    // --- Bid auction: maker-buy × taker-sell ---
+    if let Some(bid) = crate::state::dfba_clear_into(
+        &maker_buys[..n_mb],
+        &taker_sells[..n_ts],
+        crate::state::AuctionKind::Bid,
+        &mut scratch.alloc.m_ord,
+        &mut scratch.alloc.t_ord,
+        &mut scratch.prices,
+    ) {
+        bid_price = bid.clearing_price;
+        matched_bid = bid.matched_qty;
+        crate::state::dfba_allocate_into(
+            &maker_buys[..n_mb],
+            &taker_sells[..n_ts],
+            crate::state::AuctionKind::Bid,
+            &bid,
+            marginal_size_cap,
+            alloc_out,
+            &mut scratch.alloc,
+        );
+        fill_count = append_alloc_fills(
+            results_account,
+            alloc_out,
+            fill_count,
+            /*auction*/ 0,
+            accounts,
+            program_id,
+        )?;
+    }
+
+    // --- Ask auction: maker-sell × taker-buy ---
+    alloc_out.maker_fill_count = 0;
+    alloc_out.taker_fill_count = 0;
+    if let Some(ask) = crate::state::dfba_clear_into(
+        &maker_sells[..n_ms],
+        &taker_buys[..n_tb],
+        crate::state::AuctionKind::Ask,
+        &mut scratch.alloc.m_ord,
+        &mut scratch.alloc.t_ord,
+        &mut scratch.prices,
+    ) {
+        ask_price = ask.clearing_price;
+        matched_ask = ask.matched_qty;
+        crate::state::dfba_allocate_into(
+            &maker_sells[..n_ms],
+            &taker_buys[..n_tb],
+            crate::state::AuctionKind::Ask,
+            &ask,
+            marginal_size_cap,
+            alloc_out,
+            &mut scratch.alloc,
+        );
+        fill_count = append_alloc_fills(
+            results_account,
+            alloc_out,
+            fill_count,
+            /*auction*/ 1,
+            accounts,
+            program_id,
+        )?;
+    }
+
+    // Write dual header.
+    {
+        let mut rd = results_account.try_borrow_mut_data()?;
+        rd[0..8].copy_from_slice(&bid_price.to_le_bytes());
+        rd[8..16].copy_from_slice(&ask_price.to_le_bytes());
+        rd[16..24].copy_from_slice(&matched_bid.to_le_bytes());
+        rd[24..32].copy_from_slice(&matched_ask.to_le_bytes());
+        rd[32..34].copy_from_slice(&fill_count.to_le_bytes());
+    }
+
+    msg!("DfbaClear computed");
+    Ok(())
+}
+
+/// Append maker+taker fills from one auction allocation into the results
+/// account and apply fill qty to the book when present.
+fn append_alloc_fills(
+    results_account: &AccountInfo,
+    alloc: &crate::state::AllocationResult,
+    start_index: u16,
+    auction: u8,
+    accounts: &[AccountInfo],
+    program_id: &Pubkey,
+) -> Result<u16, ProgramError> {
+    let mut w = start_index as usize;
+    let mut write_one = |user: &Pubkey,
+                         order_id: u64,
+                         fill_qty: u64,
+                         is_maker: bool|
+     -> Result<(), ProgramError> {
+        if fill_qty == 0 {
+            return Ok(());
+        }
+        {
+            let mut data = results_account.try_borrow_mut_data()?;
+            let need = DFBA_RESULT_HEADER_BYTES
+                .checked_add(
+                    (w + 1)
+                        .checked_mul(DFBA_FILL_WIRE_BYTES)
+                        .ok_or(ProgramError::InvalidInstructionData)?,
+                )
+                .ok_or(ProgramError::InvalidInstructionData)?;
+            if data.len() < need {
+                return Err(ProgramError::AccountDataTooSmall);
+            }
+            let price = alloc.clearing_price;
+            encode_dfba_fill(&mut data, w, user, order_id, fill_qty, price, is_maker, auction);
+        }
+        // Apply to book outside results borrow.
+        if accounts.len() >= 2 {
+            let book_account = &accounts[1];
+            if book_account.is_writable() && book_account.owner() == program_id {
+                let mut book_data = book_account.try_borrow_mut_data()?;
+                let state = book_state_from_bytes_mut(&mut book_data)?;
+                apply_one_fill_to_book(state, order_id, fill_qty);
+            }
+        }
+        w += 1;
+        Ok(())
+    };
+
+    for i in 0..alloc.maker_fill_count {
+        let f = &alloc.maker_fills[i];
+        write_one(&f.user, f.order_id, f.fill_qty, true)?;
+    }
+    for i in 0..alloc.taker_fill_count {
+        let f = &alloc.taker_fills[i];
+        write_one(&f.user, f.order_id, f.fill_qty, false)?;
+    }
+    Ok(w as u16)
+}
+
+fn apply_one_fill_to_book(state: &mut crate::state::BookState, order_id: u64, fill_qty: u64) {
+    if fill_qty == 0 {
+        return;
+    }
+    for i in 0..state.resting_count {
+        if state.resting[i].order_id == order_id {
+            let r = &mut state.resting[i];
+            let rem = r.qty.saturating_sub(r.filled_qty);
+            let f = fill_qty.min(rem);
+            r.filled_qty = r.filled_qty.saturating_add(f);
+            break;
+        }
+    }
+}
+
+fn apply_dfba_fills_to_book(
+    state: &mut crate::state::BookState,
+    dual: &crate::state::DualAuctionResult,
+) {
+    let apply = |state: &mut crate::state::BookState, order_id: u64, fill_qty: u64| {
+        if fill_qty == 0 {
+            return;
+        }
+        for i in 0..state.resting_count {
+            if state.resting[i].order_id == order_id {
+                let r = &mut state.resting[i];
+                let rem = r.qty.saturating_sub(r.filled_qty);
+                let f = fill_qty.min(rem);
+                r.filled_qty = r.filled_qty.saturating_add(f);
+                break;
+            }
+        }
+    };
+    for i in 0..dual.bid_alloc.maker_fill_count {
+        let f = &dual.bid_alloc.maker_fills[i];
+        apply(state, f.order_id, f.fill_qty);
+    }
+    for i in 0..dual.bid_alloc.taker_fill_count {
+        let f = &dual.bid_alloc.taker_fills[i];
+        apply(state, f.order_id, f.fill_qty);
+    }
+    for i in 0..dual.ask_alloc.maker_fill_count {
+        let f = &dual.ask_alloc.maker_fills[i];
+        apply(state, f.order_id, f.fill_qty);
+    }
+    for i in 0..dual.ask_alloc.taker_fill_count {
+        let f = &dual.ask_alloc.taker_fills[i];
+        apply(state, f.order_id, f.fill_qty);
+    }
+}
+
+fn write_dfba_empty_result(account: &AccountInfo) -> ProgramResult {
+    let mut data = account.try_borrow_mut_data()?;
+    if data.len() < DFBA_RESULT_HEADER_BYTES {
+        return Err(ProgramError::AccountDataTooSmall);
+    }
+    data[..DFBA_RESULT_HEADER_BYTES].fill(0);
+    Ok(())
+}
+
+fn write_dfba_results(
+    account: &AccountInfo,
+    dual: &crate::state::DualAuctionResult,
+) -> ProgramResult {
+    let total_fills = dual.bid_alloc.maker_fill_count
+        + dual.bid_alloc.taker_fill_count
+        + dual.ask_alloc.maker_fill_count
+        + dual.ask_alloc.taker_fill_count;
+    let needed = DFBA_RESULT_HEADER_BYTES
+        .checked_add(
+            total_fills
+                .checked_mul(DFBA_FILL_WIRE_BYTES)
+                .ok_or(ProgramError::InvalidInstructionData)?,
+        )
+        .ok_or(ProgramError::InvalidInstructionData)?;
+
+    let mut data = account.try_borrow_mut_data()?;
+    if data.len() < needed {
+        msg!("Error: DfbaClear results account too small");
+        return Err(ProgramError::AccountDataTooSmall);
+    }
+
+    data[0..8].copy_from_slice(&dual.bid.clearing_price.to_le_bytes());
+    data[8..16].copy_from_slice(&dual.ask.clearing_price.to_le_bytes());
+    data[16..24].copy_from_slice(&dual.bid_alloc.matched_qty.to_le_bytes());
+    data[24..32].copy_from_slice(&dual.ask_alloc.matched_qty.to_le_bytes());
+
+    let mut w = 0usize;
+    let bp = dual.bid_alloc.clearing_price;
+    for i in 0..dual.bid_alloc.maker_fill_count {
+        let f = &dual.bid_alloc.maker_fills[i];
+        if f.fill_qty > 0 {
+            encode_dfba_fill(&mut data, w, &f.user, f.order_id, f.fill_qty, bp, true, 0);
+            w += 1;
+        }
+    }
+    for i in 0..dual.bid_alloc.taker_fill_count {
+        let f = &dual.bid_alloc.taker_fills[i];
+        if f.fill_qty > 0 {
+            encode_dfba_fill(&mut data, w, &f.user, f.order_id, f.fill_qty, bp, false, 0);
+            w += 1;
+        }
+    }
+    let ap = dual.ask_alloc.clearing_price;
+    for i in 0..dual.ask_alloc.maker_fill_count {
+        let f = &dual.ask_alloc.maker_fills[i];
+        if f.fill_qty > 0 {
+            encode_dfba_fill(&mut data, w, &f.user, f.order_id, f.fill_qty, ap, true, 1);
+            w += 1;
+        }
+    }
+    for i in 0..dual.ask_alloc.taker_fill_count {
+        let f = &dual.ask_alloc.taker_fills[i];
+        if f.fill_qty > 0 {
+            encode_dfba_fill(&mut data, w, &f.user, f.order_id, f.fill_qty, ap, false, 1);
+            w += 1;
+        }
+    }
+
+    data[32..34].copy_from_slice(&(w as u16).to_le_bytes());
+    let _ = total_fills;
+    Ok(())
+}
+
+fn encode_dfba_fill(
+    data: &mut [u8],
+    index: usize,
+    user: &Pubkey,
+    order_id: u64,
+    fill_qty: u64,
+    fill_price: i64,
+    is_maker: bool,
+    auction: u8,
+) {
+    let off = DFBA_RESULT_HEADER_BYTES + index * DFBA_FILL_WIRE_BYTES;
+    data[off..off + 32].copy_from_slice(user.as_ref());
+    data[off + 32..off + 40].copy_from_slice(&order_id.to_le_bytes());
+    data[off + 40..off + 48].copy_from_slice(&fill_qty.to_le_bytes());
+    data[off + 48..off + 56].copy_from_slice(&fill_price.to_le_bytes());
+    data[off + 56] = if is_maker { 1 } else { 0 };
+    data[off + 57] = auction;
+}
+
+// =============================================================================
+// PlaceResting (disc 6) — DFBA open post CPI target
+// =============================================================================
+
+/// Wire: user(32) + side(1) + is_maker(1) + price(8) + qty(8) + instrument_id(2)
+///        + reduce_only(1) = 53 bytes
+pub const PLACE_RESTING_DATA_LEN: usize = 32 + 1 + 1 + 8 + 8 + 2 + 1;
+
+/// Place a resting order on the book with DFBA maker/taker role.
+///
+/// Accounts:
+/// 0. `[writable]` Book account (matcher-owned)
+///
+/// Data: see `PLACE_RESTING_DATA_LEN`. Writes 8-byte `order_id` LE at the start
+/// of the book account's unused region is not done — order_id is in book state
+/// only; callers read book after CPI. (Core does not need order_id return for v1.)
+pub fn process_place_resting(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    if accounts.is_empty() {
+        msg!("Error: PlaceResting requires book account");
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    let book_account = &accounts[0];
+    if !book_account.is_writable() {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    if book_account.owner() != program_id {
+        return Err(ProgramError::IllegalOwner);
+    }
+    if data.len() < PLACE_RESTING_DATA_LEN {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    let user = Pubkey::from(
+        <[u8; 32]>::try_from(&data[0..32]).map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
+    let side = Side::from_u8(data[32]).ok_or(ProgramError::InvalidInstructionData)?;
+    let is_maker = data[33] != 0;
+    let price = i64::from_le_bytes(
+        data[34..42]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
+    let qty = u64::from_le_bytes(
+        data[42..50]
+            .try_into()
+            .map_err(|_| ProgramError::InvalidInstructionData)?,
+    );
+    let instrument_id = u16::from_le_bytes([data[50], data[51]]);
+    let reduce_only = data[52] != 0;
+
+    let order = LimitOrder {
+        user,
+        instrument_id,
+        order_type: OrderType::LimitGTC,
+        side,
+        price,
+        qty,
+        reduce_only,
+        cancel_order_id: 0,
+        is_maker,
+    };
+
+    let mut book_data = book_account.try_borrow_mut_data()?;
+    let state = book_state_from_bytes_mut(&mut book_data)?;
+    let _order_id = place_resting(state, &order).map_err(|_| ProgramError::InvalidAccountData)?;
+    msg!("PlaceResting: order placed");
     Ok(())
 }
 
@@ -613,6 +1200,7 @@ pub fn process_clear_and_match(
             qty,
             reduce_only,
             cancel_order_id: 0,
+        is_maker: false,
         };
 
         if order.order_type == OrderType::LimitGTC {
@@ -691,6 +1279,7 @@ pub fn process_clear_and_match(
             qty,
             reduce_only,
             cancel_order_id: 0,
+        is_maker: false,
         };
     }
 
@@ -797,6 +1386,7 @@ mod tests {
             qty,
             reduce_only: false,
             cancel_order_id: 0,
+        is_maker: false,
         }
     }
 

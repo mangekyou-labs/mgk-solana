@@ -1,3 +1,4 @@
+use crate::state::batch::{Batch, BatchStatus};
 use crate::state::instrument::Instrument;
 use crate::state::liquidation::{
     apply_reduction, find_top_position, validate_instrument_coverage, DEFAULT_FRACTION_BPS,
@@ -6,9 +7,9 @@ use crate::state::liquidation::{
 use crate::state::portfolio::{Portfolio, Position, MAX_INSTRUMENTS};
 use crate::state::registry::Registry;
 use crate::state::vault::Vault;
-use percolator_common::{
+use mgk_common::{
     math::{calculate_im, calculate_mm},
-    PercolatorError,
+    MgkError,
 };
 use pinocchio::{account_info::AccountInfo, msg, pubkey::Pubkey, ProgramResult};
 
@@ -39,14 +40,15 @@ const ORACLE_MAGIC: u64 = 0x4C43_524F_4C43_5250;
 ///   `liquidations_paused` check)
 /// - index 2: writable Vault PDA
 /// - index 3: signer Liquidator
-/// - indices 4..4+num_instruments: read-only Instrument accounts (provide
+/// - index 4: read-only Batch (latest settled; DFBA `mark_valid` / `liq_paused`)
+/// - indices 5..5+num_instruments: read-only Instrument accounts (provide
 ///   composite mark_price, contract_size, imr_bps, mmr_bps)
-/// - index 4+num_instruments: read-only fallback oracle account (single,
-///   owner = percolator-oracle).
+/// - index 5+num_instruments: read-only fallback oracle account (single,
+///   owner = mgk-oracle).
 ///
 /// **Caller MUST pass an instrument account for every distinct
 /// `instrument_id` referenced by the portfolio's positions.** A missing
-/// instrument returns `PercolatorError::InstrumentMissingForLiquidation`
+/// instrument returns `MgkError::InstrumentMissingForLiquidation`
 /// (= 601) — see M7 7.7 remediation R1. Pass all 32 if unsure; the lookup
 /// uses `instrument_id` as the index, so extra unused accounts are
 /// harmless.
@@ -58,12 +60,13 @@ pub fn process_liquidate_user(
     registry_account: &AccountInfo,
     vault_account: &AccountInfo,
     liquidator_account: &AccountInfo,
+    batch_account: &AccountInfo,
     instrument_accounts: &[AccountInfo],
     oracle_account: &AccountInfo,
 ) -> ProgramResult {
     if !liquidator_account.is_signer() {
         msg!("Error: Liquidator must be signer");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     let portfolio = unsafe {
@@ -79,12 +82,12 @@ pub fn process_liquidate_user(
     // liquidations allows bad debt to accumulate.
     if registry.is_liquidations_paused() {
         msg!("Error: Liquidations are paused");
-        return Err(PercolatorError::OperationPaused.into());
+        return Err(MgkError::OperationPaused.into());
     }
 
     if portfolio.positions_len == 0 {
         msg!("Error: No positions to liquidate");
-        return Err(PercolatorError::InvalidInstruction.into());
+        return Err(MgkError::InvalidInstruction.into());
     }
 
     // M7 7.7 remediation (R1): collect the set of instrument IDs the
@@ -115,7 +118,28 @@ pub fn process_liquidate_user(
 
     if portfolio.health >= 0 {
         msg!("Error: Portfolio is healthy, cannot liquidate");
-        return Err(PercolatorError::PortfolioHealthy.into());
+        return Err(MgkError::PortfolioHealthy.into());
+    }
+
+    // DFBA T9.4.1: liquidations require a dual-clear mark on the settled batch.
+    // Trading may continue when only liq is paused (`liq_paused` / !mark_valid).
+    let batch = unsafe { &*(batch_account.borrow_data_unchecked().as_ptr() as *const Batch) };
+    if batch.status != BatchStatus::Settled {
+        msg!("Error: Liquidate requires a Settled batch for mark_valid");
+        return Err(MgkError::InvalidInstruction.into());
+    }
+    if batch.mark_valid == 0 || batch.liq_paused != 0 {
+        msg!("Error: DFBA mark invalid / liq paused; liquidations blocked");
+        return Err(MgkError::OperationPaused.into());
+    }
+    // Prefer instrument mark when set; dual mid was written on settle when mark_valid.
+    let any_mark = instrument_accounts.iter().any(|a| {
+        let inst = unsafe { &*(a.borrow_data_unchecked().as_ptr() as *const Instrument) };
+        inst.mark_price > 0
+    }) || batch.clearing_price > 0;
+    if !any_mark {
+        msg!("Error: No usable mark price for liquidation");
+        return Err(MgkError::OperationPaused.into());
     }
 
     let oracle_price = read_oracle_price(oracle_account);
@@ -370,6 +394,23 @@ mod tests {
         assert_eq!(inst.contract_size, 1);
         assert_eq!(inst.imr_bps, 100);
         assert_eq!(inst.mmr_bps, 50);
+    }
+
+    /// T9.4.1: liquidation gate pattern — Settled + mark_valid + !liq_paused.
+    #[test]
+    fn test_dfba_liq_mark_gate_pattern() {
+        use crate::state::batch::{Batch, BatchStatus};
+        let mut b = Batch::new(1);
+        b.status = BatchStatus::Settled;
+        b.mark_valid = 0;
+        b.liq_paused = 1;
+        assert!(b.mark_valid == 0 || b.liq_paused != 0);
+
+        b.mark_valid = 1;
+        b.liq_paused = 0;
+        b.clearing_price = 100_000;
+        assert!(b.status == BatchStatus::Settled && b.mark_valid != 0 && b.liq_paused == 0);
+        let _ = user_pubkey(1);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 [package]
-name = "percolator-oracle"
+name = "mgk-oracle"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,7 @@ repository.workspace = true
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "percolator_oracle"
+name = "mgk_oracle"
 
 [dependencies]
 pinocchio.workspace = true

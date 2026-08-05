@@ -1,4 +1,4 @@
-//! Program ID getters for all Percolator programs.
+//! Program ID getters for all MGK programs.
 //!
 //! Returns canonical program addresses for CPI callers.
 
@@ -36,7 +36,7 @@ pub fn perps_matcher_program_id() -> Pubkey {
 }
 
 #[inline]
-pub fn percolator_oracle_program_id() -> Pubkey {
+pub fn mgk_oracle_program_id() -> Pubkey {
     ORACLE_ID
 }
 
@@ -49,6 +49,6 @@ mod tests {
         let zero = [0u8; 32];
         assert_ne!(perps_core_program_id(), zero, "perps_core_program_id must not be zero");
         assert_ne!(perps_matcher_program_id(), zero, "perps_matcher_program_id must not be zero");
-        assert_ne!(percolator_oracle_program_id(), zero, "percolator_oracle_program_id must not be zero");
+        assert_ne!(mgk_oracle_program_id(), zero, "mgk_oracle_program_id must not be zero");
     }
 }

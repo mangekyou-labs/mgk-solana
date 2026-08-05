@@ -3,10 +3,10 @@ use pinocchio::{program_error::ProgramError, pubkey::Pubkey};
 
 // Re-export so existing `mgk_perps_matcher::state::book::OrderBook` paths
 // continue to resolve. The canonical definition lives in
-// `percolator-common::book` so other programs (notably perps-core) can
+// `mgk-common::book` so other programs (notably perps-core) can
 // read the book PDA without taking a Rust crate dependency on perps-matcher
 // (which would cause a duplicate `panic_handler` at link time).
-pub use percolator_common::book::{BookLevel, OrderBook, MAX_LEVELS, MAX_ORDERS_PER_LEVEL, NULL_OFFSET};
+pub use mgk_common::book::{BookLevel, OrderBook, MAX_LEVELS, MAX_ORDERS_PER_LEVEL, NULL_OFFSET};
 
 /// Total maximum resting orders in the book (bids + asks).
 ///
@@ -29,6 +29,8 @@ pub struct RestingOrder {
     pub reduce_only: bool,
     pub batch_placed: u64,
     pub next_order_offset: u32,
+    /// DFBA role preserved across batches (full rest).
+    pub is_maker: bool,
 }
 
 /// In-memory working state for the order book.
@@ -216,6 +218,7 @@ pub fn place_resting(state: &mut BookState, order: &LimitOrder) -> Result<u64, B
         reduce_only: order.reduce_only,
         batch_placed: 0,
         next_order_offset: NULL_OFFSET,
+        is_maker: order.is_maker,
     };
 
     // Update level totals.
@@ -509,7 +512,7 @@ pub enum BookError {
 impl From<BookError> for ProgramError {
     fn from(e: BookError) -> Self {
         let code: u64 = match e {
-            // Map to slab errors 200-299 from percolator-common, then offset
+            // Map to slab errors 200-299 from mgk-common, then offset
             // for matcher-specific codes. Reuse generic ProgramError codes
             // for conditions that don't need a domain-specific tag.
             BookError::Full => 200 + 12,           // PoolFull
@@ -631,7 +634,14 @@ mod tests {
             qty,
             reduce_only: false,
             cancel_order_id: 0,
+            is_maker: false,
         }
+    }
+
+    fn make_maker(byte: u8, side: Side, price: i64, qty: u64) -> LimitOrder {
+        let mut o = make_order(byte, side, price, qty);
+        o.is_maker = true;
+        o
     }
 
     #[test]
@@ -643,6 +653,16 @@ mod tests {
         assert_eq!(state.book.best_bid, 100);
         assert_eq!(state.book.bid_count, 1);
         assert_eq!(state.resting_count, 1);
+        assert!(!state.resting[0].is_maker); // default taker
+    }
+
+    #[test]
+    fn test_place_resting_preserves_is_maker() {
+        let mut state = BookState::new();
+        place_resting(&mut state, &make_maker(1, Side::Sell, 100, 10)).unwrap();
+        assert!(state.resting[0].is_maker);
+        place_resting(&mut state, &make_order(2, Side::Buy, 99, 5)).unwrap();
+        assert!(!state.resting[1].is_maker);
     }
 
     #[test]
@@ -719,12 +739,9 @@ mod tests {
     #[test]
     fn test_book_account_size_is_stable() {
         // Pin the on-disk size so account sizing stays predictable.
-        // Approx ~27KB at MAX_RESTING_ORDERS=256.
+        // RestingOrder × 256 + OrderBook header ≈ 27 KB.
         let size = book_account_size();
-        assert!(size > 0);
-        // Sanity range: should be between 16KB and 64KB.
-        assert!(size > 16 * 1024, "size too small: {}", size);
-        assert!(size < 64 * 1024, "size too large: {}", size);
+        assert_eq!(size, 27_704, "update e2e BOOK_ACCOUNT_SIZE if this changes");
     }
 
     #[test]
@@ -839,6 +856,7 @@ mod tests {
             qty: 5,
             reduce_only: false,
             cancel_order_id: 0,
+        is_maker: false,
         };
         let mut queues2 = PartitionedOrders::new();
         let input = [buy];
@@ -882,6 +900,7 @@ mod tests {
             qty: 0,
             reduce_only: false,
             cancel_order_id: id,
+        is_maker: false,
         };
         let input = [cancel];
         let mut queues = PartitionedOrders::new();
@@ -916,6 +935,7 @@ mod tests {
             qty: 0,
             reduce_only: false,
             cancel_order_id: 0,
+        is_maker: false,
         };
         let input = [cancel_all];
         let mut queues = PartitionedOrders::new();
@@ -1030,3 +1050,4 @@ mod tests {
         assert_eq!(state.book.bids[0].total_qty, 5);
     }
 }
+

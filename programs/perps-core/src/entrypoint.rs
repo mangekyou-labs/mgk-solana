@@ -12,13 +12,13 @@ use crate::instructions::{
     process_cancel_resting_order, process_clear_batch, process_close_committing,
     process_commit_order, process_create_batch, process_create_portfolio, process_deposit,
     process_init_portfolio, process_init_portfolio_for_user, process_init_vault,
-    process_initialize, process_liquidate_user, process_modify_resting_order,
-    process_reveal_order, process_set_batch_counter, process_set_pause_flags,
-    process_settle_batch, process_withdraw,
+    process_initialize, process_liquidate_user, process_modify_resting_order, process_post_order,
+    process_reveal_order, process_set_batch_counter, process_set_pause_flags, process_settle_batch,
+    process_withdraw,
 };
 use crate::state::{Portfolio, Registry, Vault};
-use percolator_common::{
-    PercolatorError, validate_owner, validate_writable, borrow_account_data_mut,
+use mgk_common::{
+    MgkError, validate_owner, validate_writable, borrow_account_data_mut,
 };
 
 entrypoint!(process_instruction);
@@ -30,7 +30,7 @@ pub fn process_instruction(
 ) -> ProgramResult {
     if instruction_data.is_empty() {
         msg!("Error: Instruction data is empty");
-        return Err(PercolatorError::InvalidInstruction.into());
+        return Err(MgkError::InvalidInstruction.into());
     }
 
     let discriminator = instruction_data[0];
@@ -55,9 +55,10 @@ pub fn process_instruction(
         17 => CoreInstruction::SetBatchCounter,
         18 => CoreInstruction::CreatePortfolio,
         19 => CoreInstruction::InitPortfolioForUser,
+        20 => CoreInstruction::PostOrder,
         _ => {
             msg!("Error: Unknown instruction");
-            return Err(PercolatorError::InvalidInstruction.into());
+            return Err(MgkError::InvalidInstruction.into());
         }
     };
 
@@ -142,7 +143,57 @@ pub fn process_instruction(
             msg!("Instruction: InitPortfolioForUser");
             process_init_portfolio_for_user(program_id, accounts, &instruction_data[1..])
         }
+        CoreInstruction::PostOrder => {
+            msg!("Instruction: PostOrder");
+            process_post_order_inner(program_id, accounts, &instruction_data[1..])
+        }
     }
+}
+
+/// DFBA PostOrder (disc 20).
+///
+/// Accounts:
+/// 0. [writable] Portfolio
+/// 1. [signer] User
+/// 2. [writable] Batch (open window; increments post count)
+/// 3. [] Registry
+/// 4. [writable] Book (matcher-owned)
+/// 5. [] Matcher program
+///
+/// Data: side(1) + is_maker(1) + price(8) + qty(8) + instrument_id(2) + reduce_only(1) = 21
+fn process_post_order_inner(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    if accounts.len() < 6 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    if data.len() < 21 {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    let side = data[0];
+    let is_maker = data[1] != 0;
+    let price = i64::from_le_bytes(data[2..10].try_into().unwrap());
+    let qty = u64::from_le_bytes(data[10..18].try_into().unwrap());
+    let instrument_id = u16::from_le_bytes(data[18..20].try_into().unwrap());
+    let reduce_only = data[20] != 0;
+
+    process_post_order(
+        program_id,
+        &accounts[0],
+        &accounts[1],
+        &accounts[2],
+        &accounts[3],
+        &accounts[4],
+        &accounts[5],
+        side,
+        is_maker,
+        price,
+        qty,
+        instrument_id,
+        reduce_only,
+    )
 }
 
 /// Initialize registry + first instrument
@@ -242,7 +293,7 @@ fn process_init_portfolio_inner(_program_id: &Pubkey, accounts: &[AccountInfo], 
     let payer = &accounts[1];
 
     if !payer.is_signer() {
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     validate_writable(portfolio_account)?;
@@ -587,7 +638,7 @@ fn process_clear_batch_inner(program_id: &Pubkey, accounts: &[AccountInfo], data
 /// 5. [] Book PDA (matcher-owned, read-only from Core; provides the
 ///    depth-weighted sweep input for mark price — design L468-501)
 /// 6. [] Fallback oracle account (provides the oracle price for mark
-///    price when the book is empty/stale; owner = percolator-oracle)
+///    price when the book is empty/stale; owner = mgk-oracle)
 /// 7. [] Matcher program (the key is used to derive the book PDA
 ///    address for validation — same pattern as ClearBatch /
 ///    CancelRestingOrder / ModifyRestingOrder).
@@ -656,22 +707,20 @@ fn process_settle_batch_inner(program_id: &Pubkey, accounts: &[AccountInfo], dat
     )
 }
 
-/// Liquidate an underwater portfolio (M7 7.7).
+/// Liquidate an underwater portfolio (M7 7.7 + DFBA mark gate).
 ///
 /// Accounts (fixed + variable):
 /// - index 0: writable Portfolio PDA
-/// - index 1: read-only Registry (M7 7.8: required for
-///   `liquidations_paused` check)
+/// - index 1: read-only Registry
 /// - index 2: writable Vault PDA
 /// - index 3: signer Liquidator
-/// - indices 4..4+num_instruments: read-only Instrument accounts (provide
-///   composite mark_price, contract_size, imr_bps, mmr_bps)
-/// - index 4+num_instruments: read-only fallback oracle account (single,
-///   owner = percolator-oracle)
+/// - index 4: read-only Batch (Settled; `mark_valid` / `liq_paused`)
+/// - indices 5..5+num_instruments: read-only Instrument accounts
+/// - index 5+num_instruments: read-only fallback oracle account
 ///
 /// Data: num_instruments(2)
 fn process_liquidate_user_inner(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
-    if accounts.len() < 5 {
+    if accounts.len() < 6 {
         return Err(ProgramError::NotEnoughAccountKeys);
     }
     if data.len() < 2 {
@@ -682,15 +731,16 @@ fn process_liquidate_user_inner(program_id: &Pubkey, accounts: &[AccountInfo], d
     let registry_account = &accounts[1];
     let vault_account = &accounts[2];
     let liquidator_account = &accounts[3];
+    let batch_account = &accounts[4];
 
     let num_instruments = u16::from_le_bytes(data[0..2].try_into().unwrap()) as usize;
-    let inst_end = 4usize
+    let inst_end = 5usize
         .checked_add(num_instruments)
         .ok_or(ProgramError::InvalidInstructionData)?;
     if accounts.len() < inst_end + 1 {
         return Err(ProgramError::NotEnoughAccountKeys);
     }
-    let instrument_accounts = &accounts[4..inst_end];
+    let instrument_accounts = &accounts[5..inst_end];
     let oracle_account = &accounts[inst_end];
 
     validate_owner(portfolio_account, program_id)?;
@@ -698,6 +748,7 @@ fn process_liquidate_user_inner(program_id: &Pubkey, accounts: &[AccountInfo], d
     validate_owner(registry_account, program_id)?;
     validate_owner(vault_account, program_id)?;
     validate_writable(vault_account)?;
+    validate_owner(batch_account, program_id)?;
 
     process_liquidate_user(
         program_id,
@@ -705,6 +756,7 @@ fn process_liquidate_user_inner(program_id: &Pubkey, accounts: &[AccountInfo], d
         registry_account,
         vault_account,
         liquidator_account,
+        batch_account,
         instrument_accounts,
         oracle_account,
     )

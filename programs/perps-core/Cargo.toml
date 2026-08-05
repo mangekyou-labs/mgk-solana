@@ -11,7 +11,7 @@ doctest = false
 [dependencies]
 pinocchio = { workspace = true }
 pinocchio-pubkey = { workspace = true }
-percolator-common = { path = "../common" }
+mgk-common = { path = "../common" }
 sha2 = { version = "0.10", optional = true }
 
 [features]

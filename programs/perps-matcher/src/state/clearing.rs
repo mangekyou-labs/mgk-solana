@@ -594,6 +594,7 @@ mod tests {
             qty,
             reduce_only: false,
             cancel_order_id: 0,
+        is_maker: false,
         }
     }
 

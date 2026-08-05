@@ -13,6 +13,10 @@ enum MatcherInstruction {
     ModifyResting,
     ClearAndMatch,
     CancelAll,
+    /// Dual Flow Batch Auction clear (disc 5).
+    DfbaClear,
+    /// Place a resting order with DFBA role flag (disc 6).
+    PlaceResting,
 }
 
 pub fn process_instruction(
@@ -32,6 +36,8 @@ pub fn process_instruction(
         2 => MatcherInstruction::ModifyResting,
         3 => MatcherInstruction::ClearAndMatch,
         4 => MatcherInstruction::CancelAll,
+        5 => MatcherInstruction::DfbaClear,
+        6 => MatcherInstruction::PlaceResting,
         _ => {
             msg!("Error: Unknown instruction");
             return Err(ProgramError::InvalidInstructionData);
@@ -58,6 +64,14 @@ pub fn process_instruction(
         MatcherInstruction::CancelAll => {
             msg!("Instruction: CancelAll");
             instructions::process_cancel_all(program_id, accounts, &instruction_data[1..])
+        }
+        MatcherInstruction::DfbaClear => {
+            msg!("Instruction: DfbaClear");
+            instructions::process_dfba_clear(program_id, accounts, &instruction_data[1..])
+        }
+        MatcherInstruction::PlaceResting => {
+            msg!("Instruction: PlaceResting");
+            instructions::process_place_resting(program_id, accounts, &instruction_data[1..])
         }
     }
 }

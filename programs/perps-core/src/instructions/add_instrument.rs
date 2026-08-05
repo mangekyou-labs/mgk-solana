@@ -1,5 +1,5 @@
 use crate::state::{Instrument, Registry};
-use percolator_common::PercolatorError;
+use mgk_common::MgkError;
 use pinocchio::{
     account_info::AccountInfo,
     msg,
@@ -24,17 +24,17 @@ pub fn process_add_instrument(
 ) -> ProgramResult {
     if !governance_account.is_signer() {
         msg!("Error: Governance must be a signer");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     if registry.governance != *governance_account.key() {
         msg!("Error: Invalid governance");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     if registry.instrument_count >= 32 {
         msg!("Error: Instrument registry full");
-        return Err(PercolatorError::InvalidInstruction.into());
+        return Err(MgkError::InvalidInstruction.into());
     }
 
     let mut sym = [0u8; 16];

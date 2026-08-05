@@ -1,7 +1,7 @@
 //! Order book data types shared between `perps-core` (mark price sweep,
 //! `SettleBatch` funding premium) and `perps-matcher` (matching engine).
 //!
-//! These types live in `percolator-common` so the perps-core program can
+//! These types live in `mgk-common` so the perps-core program can
 //! read the order book PDA (owned by perps-matcher) without taking a Rust
 //! crate dependency on perps-matcher. The crate dependency would cause
 //! duplicate `panic_handler` lang items at link time, since each program

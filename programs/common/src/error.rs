@@ -3,7 +3,7 @@
 /// Program errors
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PercolatorError {
+pub enum MgkError {
     // Common errors (0-99)
     InvalidInstruction = 0,
     InvalidAccount = 1,
@@ -84,18 +84,18 @@ mod tests {
     /// pattern that produces this error.
     #[test]
     fn test_operation_paused_error_pinned_to_perps_core_range() {
-        assert_eq!(PercolatorError::OperationPaused as u32, 602);
+        assert_eq!(MgkError::OperationPaused as u32, 602);
     }
 }
 
-impl From<PercolatorError> for u64 {
-    fn from(e: PercolatorError) -> u64 {
+impl From<MgkError> for u64 {
+    fn from(e: MgkError) -> u64 {
         e as u64
     }
 }
 
-impl From<PercolatorError> for pinocchio::program_error::ProgramError {
-    fn from(e: PercolatorError) -> Self {
+impl From<MgkError> for pinocchio::program_error::ProgramError {
+    fn from(e: MgkError) -> Self {
         pinocchio::program_error::ProgramError::from(e as u64)
     }
 }

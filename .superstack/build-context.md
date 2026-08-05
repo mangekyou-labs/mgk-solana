@@ -1,7 +1,7 @@
 # mgk — Build Context
 
 ## Project
-- **Name**: mgk (formerly percolator; rebrand commit 9c92cc7)
+- **Name**: mgk (formerly percolator; rebrand completed 2026-08-05)
 - **Description**: On-chain perpetual futures exchange with commit-reveal CLOB (Fisher-Yates shuffle + structural priority queues), price-time matching, persistent order book, and cross-margin. Built on Solana using Pinocchio (not Anchor).
 - **Status**: MVP scope per 2025-06-15 strip — perps-dex only. Router/slab/AMM/CLI/keeper/Kani-prover scaffolding removed.
 
@@ -18,10 +18,10 @@
 
 | Program | Crate | Program ID | Role |
 |---|---|---|---|
-| oracle | `percolator-oracle` | declared in `lib.rs` | Fallback price feed (admin-pushed, auto-activate) |
+| oracle | `mgk-oracle` | declared in `lib.rs` | Fallback price feed (admin-pushed, auto-activate) |
 | perps-core | `mgk-perps-core` | `3jYQ4mpWBBtwrzYQ4zzKhgqVcWWsG2HpXi9oXTBpekja` | Custody, batch lifecycle, CLOB state, liquidation |
 | perps-matcher | `mgk-perps-matcher` | `AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF` | CLOB matching (CPI target from core) |
-| common | `percolator-common` | (library) | Account validation, errors, math, types |
+| common | `mgk-common` | (library) | Account validation, errors, math, types |
 
 ### Patterns
 - **Instruction dispatch**: single-byte u8 discriminator (`instruction_data[0]`)
@@ -67,8 +67,8 @@
 ### Test Inventory
 | Crate | Tests |
 |---|---|
-| `percolator-common` | 43 |
-| `percolator-oracle` | 5 |
+| `mgk-common` | 43 |
+| `mgk-oracle` | 5 |
 | `mgk-perps-matcher` | 85 (+ 1 ignored) |
 | `mgk-perps-core` (lib) | 183 |
 | `mgk-perps-core/tests/lifecycle.rs` | 7 e2e (gated on `BPF_OUT_DIR`) |
@@ -164,7 +164,7 @@ Same BPF alignment pattern. Two more `initialize_in_place()` calls were corrupti
 |---|---|---|---|
 | `mgk-perps-core` | `3jYQ4mpWBBtwrzYQ4zzKhgqVcWWsG2HpXi9oXTBpekja` | ~111KB | Fresh deploy after closing CThnLgZ...; program_ids.rs updated; .bss removed via llvm-objcopy |
 | `mgk-perps-matcher` | `AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF` | ~128KB | |
-| `percolator-oracle` | `6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA` | ~25KB | |
+| `mgk-oracle` | `6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA` | ~25KB | |
 
 - perps-core: Fresh deploy after cleanup. CThnLgZvomva1HHQZVoZk4or9RDgyfCTrXXZqEMCR7JN closed (stale registry accounts). CzWqtmcrm6sivjNHfNWhoMJfxP7ibm8KqXXjZpkswXy5 still active (176KB, pre-cleanup).
 - matcher/oracle: unchanged
@@ -178,7 +178,7 @@ Same BPF alignment pattern. Two more `initialize_in_place()` calls were corrupti
 |---|---|---|---|
 | `mgk-perps-core` | `DBrCzAMAJhxnPRQnBzEZGMhSALGfvQDDe6xEn2nU1uar` | 99,768 B | `d642df415af46e16efce82146f9d2feceea161181f512b1d9b12ce46bb692eff` |
 | `mgk-perps-matcher` | `AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF` | 111,320 B | `1b26e8f9a2e8ca981392433124939b19b04f06897a63ad629532a918903a669e` |
-| `percolator-oracle` | `6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA` | 14,200 B | `cf0d07fa103027650bb0c8c20054d330d5803d1fbd6325f6dd45a4f19512efb0` |
+| `mgk-oracle` | `6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA` | 14,200 B | `cf0d07fa103027650bb0c8c20054d330d5803d1fbd6325f6dd45a4f19512efb0` |
 
 **New .so files (2026-06-19, R4b re-fix):**
 | Program | ID | Size | SHA-256 |
@@ -195,4 +195,4 @@ Same BPF alignment pattern. Two more `initialize_in_place()` calls were corrupti
 The original canonical keypair (`target/deploy/mgk_perps_matcher-keypair.json`, pubkey `9o2vTBBhEp6CYxNsDPsX79Euhzh8TtoLTSHR5R3jXebZ`) was broken on devnet: 3 deploy txs finalized with `Status: Ok` but the program account never appeared on-chain. A fresh keypair deployed cleanly. The old keypair is backed up at `/tmp/matcher-keypair-BROKEN-ID.json`.
 
 ### Oracle status
-The Rust oracle (`percolator-oracle`) is now deployed. It supports admin-pushed prices via `UpdatePrice` (disc 1) and `SetAuthority` (disc 2). No keeper bot running yet — initial price push required before the chart can render real prices. See `programs/oracle/src/entrypoint.rs` for the instruction set.
+The Rust oracle (`mgk-oracle`) is now deployed. It supports admin-pushed prices via `UpdatePrice` (disc 1) and `SetAuthority` (disc 2). No keeper bot running yet — initial price push required before the chart can render real prices. See `programs/oracle/src/entrypoint.rs` for the instruction set.

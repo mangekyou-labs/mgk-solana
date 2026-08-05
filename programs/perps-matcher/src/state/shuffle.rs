@@ -60,6 +60,7 @@ mod tests {
             qty: 0,
             reduce_only: false,
             cancel_order_id: 0,
+        is_maker: false,
         }; 64];
         for (i, slot) in arr.iter_mut().enumerate().take(n) {
             let mut user_bytes = [0u8; 32];
@@ -73,6 +74,7 @@ mod tests {
                 qty: (i as u64) + 1, // unique qty lets us track original position
                 reduce_only: false,
                 cancel_order_id: 0,
+            is_maker: false,
             };
         }
         arr

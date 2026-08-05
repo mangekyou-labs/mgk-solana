@@ -5,7 +5,7 @@ use pinocchio::{
     sysvars::{clock::Clock, Sysvar},
     ProgramResult,
 };
-use percolator_common::{validate_owner, validate_writable, PercolatorError};
+use mgk_common::{validate_owner, validate_writable, MgkError};
 
 /// Create the first batch in Committing state.
 ///
@@ -29,7 +29,7 @@ pub fn process_create_batch(
         &*(batch_account.borrow_data_unchecked().as_ptr() as *const Batch)
     };
     if batch_probe.batch_id != 0 {
-        return Err(PercolatorError::AlreadyInitialized.into());
+        return Err(MgkError::AlreadyInitialized.into());
     }
 
     let current_slot = Clock::get()?.slot;
@@ -133,7 +133,7 @@ pub fn process_set_batch_counter(
     // Governance check via raw pointer (avoids layout issues on SBF)
     let caller = governance_account.key();
     if caller.as_ref() != stored_governance {
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     // Write 0 to batch_id_counter at offset 36 (u64)

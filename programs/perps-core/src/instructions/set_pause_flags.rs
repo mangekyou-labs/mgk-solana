@@ -1,5 +1,5 @@
 use crate::state::Registry;
-use percolator_common::PercolatorError;
+use mgk_common::MgkError;
 use pinocchio::{
     account_info::AccountInfo,
     msg,
@@ -26,12 +26,12 @@ pub fn process_set_pause_flags(
 ) -> ProgramResult {
     if !governance_account.is_signer() {
         msg!("Error: Governance must be a signer");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     if registry.governance != *governance_account.key() {
         msg!("Error: Invalid governance");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     registry.set_pause_flags(flags);

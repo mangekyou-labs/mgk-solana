@@ -26,7 +26,7 @@
 //! A position's funding payment is the difference between the current
 //! `cum_funding` and the position's `last_funding_checkpoint`, scaled
 //! by the position's qty — that is, the same formula as
-//! `percolator_common::math::calculate_funding_payment`, which we reuse.
+//! `mgk_common::math::calculate_funding_payment`, which we reuse.
 //!
 //! ## Sign convention (carried from existing math.rs + Kani proof)
 //!
@@ -503,8 +503,8 @@ mod tests {
         // in common::math::m10_funding_symmetry.
         let cum_current: i128 = 1_000;
         let cum_entry: i128 = 0;
-        let long_p = percolator_common::math::calculate_funding_payment(10, cum_current, cum_entry);
-        let short_p = percolator_common::math::calculate_funding_payment(-10, cum_current, cum_entry);
+        let long_p = mgk_common::math::calculate_funding_payment(10, cum_current, cum_entry);
+        let short_p = mgk_common::math::calculate_funding_payment(-10, cum_current, cum_entry);
         assert_eq!(long_p, 10_000);
         assert_eq!(short_p, -10_000);
         assert_eq!(long_p + short_p, 0);

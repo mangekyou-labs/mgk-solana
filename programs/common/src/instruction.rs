@@ -3,22 +3,22 @@
 //! Provides utilities for safely parsing instruction data from byte slices.
 //! All functions perform bounds checking and return errors on invalid input.
 
-use crate::error::PercolatorError;
+use crate::error::MgkError;
 
 /// Read a u8 from instruction data
 #[inline]
-pub fn read_u8(data: &[u8], offset: usize) -> Result<u8, PercolatorError> {
+pub fn read_u8(data: &[u8], offset: usize) -> Result<u8, MgkError> {
     if offset >= data.len() {
-        return Err(PercolatorError::InvalidInstruction);
+        return Err(MgkError::InvalidInstruction);
     }
     Ok(data[offset])
 }
 
 /// Read a u16 (little-endian) from instruction data
 #[inline]
-pub fn read_u16(data: &[u8], offset: usize) -> Result<u16, PercolatorError> {
+pub fn read_u16(data: &[u8], offset: usize) -> Result<u16, MgkError> {
     if offset + 2 > data.len() {
-        return Err(PercolatorError::InvalidInstruction);
+        return Err(MgkError::InvalidInstruction);
     }
     let bytes = [data[offset], data[offset + 1]];
     Ok(u16::from_le_bytes(bytes))
@@ -26,9 +26,9 @@ pub fn read_u16(data: &[u8], offset: usize) -> Result<u16, PercolatorError> {
 
 /// Read a u32 (little-endian) from instruction data
 #[inline]
-pub fn read_u32(data: &[u8], offset: usize) -> Result<u32, PercolatorError> {
+pub fn read_u32(data: &[u8], offset: usize) -> Result<u32, MgkError> {
     if offset + 4 > data.len() {
-        return Err(PercolatorError::InvalidInstruction);
+        return Err(MgkError::InvalidInstruction);
     }
     let mut bytes = [0u8; 4];
     bytes.copy_from_slice(&data[offset..offset + 4]);
@@ -37,9 +37,9 @@ pub fn read_u32(data: &[u8], offset: usize) -> Result<u32, PercolatorError> {
 
 /// Read a u64 (little-endian) from instruction data
 #[inline]
-pub fn read_u64(data: &[u8], offset: usize) -> Result<u64, PercolatorError> {
+pub fn read_u64(data: &[u8], offset: usize) -> Result<u64, MgkError> {
     if offset + 8 > data.len() {
-        return Err(PercolatorError::InvalidInstruction);
+        return Err(MgkError::InvalidInstruction);
     }
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&data[offset..offset + 8]);
@@ -48,9 +48,9 @@ pub fn read_u64(data: &[u8], offset: usize) -> Result<u64, PercolatorError> {
 
 /// Read an i64 (little-endian) from instruction data
 #[inline]
-pub fn read_i64(data: &[u8], offset: usize) -> Result<i64, PercolatorError> {
+pub fn read_i64(data: &[u8], offset: usize) -> Result<i64, MgkError> {
     if offset + 8 > data.len() {
-        return Err(PercolatorError::InvalidInstruction);
+        return Err(MgkError::InvalidInstruction);
     }
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&data[offset..offset + 8]);
@@ -59,9 +59,9 @@ pub fn read_i64(data: &[u8], offset: usize) -> Result<i64, PercolatorError> {
 
 /// Read a u128 (little-endian) from instruction data
 #[inline]
-pub fn read_u128(data: &[u8], offset: usize) -> Result<u128, PercolatorError> {
+pub fn read_u128(data: &[u8], offset: usize) -> Result<u128, MgkError> {
     if offset + 16 > data.len() {
-        return Err(PercolatorError::InvalidInstruction);
+        return Err(MgkError::InvalidInstruction);
     }
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&data[offset..offset + 16]);
@@ -70,9 +70,9 @@ pub fn read_u128(data: &[u8], offset: usize) -> Result<u128, PercolatorError> {
 
 /// Read a fixed-size byte array from instruction data
 #[inline]
-pub fn read_bytes<const N: usize>(data: &[u8], offset: usize) -> Result<[u8; N], PercolatorError> {
+pub fn read_bytes<const N: usize>(data: &[u8], offset: usize) -> Result<[u8; N], MgkError> {
     if offset + N > data.len() {
-        return Err(PercolatorError::InvalidInstruction);
+        return Err(MgkError::InvalidInstruction);
     }
     let mut bytes = [0u8; N];
     bytes.copy_from_slice(&data[offset..offset + N]);
@@ -81,12 +81,12 @@ pub fn read_bytes<const N: usize>(data: &[u8], offset: usize) -> Result<[u8; N],
 
 /// Read a Side enum from instruction data
 #[inline]
-pub fn read_side(data: &[u8], offset: usize) -> Result<crate::Side, PercolatorError> {
+pub fn read_side(data: &[u8], offset: usize) -> Result<crate::Side, MgkError> {
     let val = read_u8(data, offset)?;
     match val {
         0 => Ok(crate::Side::Buy),
         1 => Ok(crate::Side::Sell),
-        _ => Err(PercolatorError::InvalidSide),
+        _ => Err(MgkError::InvalidSide),
     }
 }
 
@@ -120,7 +120,7 @@ impl<'a> InstructionReader<'a> {
 
     /// Read a u8 and advance offset
     #[inline]
-    pub fn read_u8(&mut self) -> Result<u8, PercolatorError> {
+    pub fn read_u8(&mut self) -> Result<u8, MgkError> {
         let val = read_u8(self.data, self.offset)?;
         self.offset += 1;
         Ok(val)
@@ -128,7 +128,7 @@ impl<'a> InstructionReader<'a> {
 
     /// Read a u16 and advance offset
     #[inline]
-    pub fn read_u16(&mut self) -> Result<u16, PercolatorError> {
+    pub fn read_u16(&mut self) -> Result<u16, MgkError> {
         let val = read_u16(self.data, self.offset)?;
         self.offset += 2;
         Ok(val)
@@ -136,7 +136,7 @@ impl<'a> InstructionReader<'a> {
 
     /// Read a u32 and advance offset
     #[inline]
-    pub fn read_u32(&mut self) -> Result<u32, PercolatorError> {
+    pub fn read_u32(&mut self) -> Result<u32, MgkError> {
         let val = read_u32(self.data, self.offset)?;
         self.offset += 4;
         Ok(val)
@@ -144,7 +144,7 @@ impl<'a> InstructionReader<'a> {
 
     /// Read a u64 and advance offset
     #[inline]
-    pub fn read_u64(&mut self) -> Result<u64, PercolatorError> {
+    pub fn read_u64(&mut self) -> Result<u64, MgkError> {
         let val = read_u64(self.data, self.offset)?;
         self.offset += 8;
         Ok(val)
@@ -152,7 +152,7 @@ impl<'a> InstructionReader<'a> {
 
     /// Read an i64 and advance offset
     #[inline]
-    pub fn read_i64(&mut self) -> Result<i64, PercolatorError> {
+    pub fn read_i64(&mut self) -> Result<i64, MgkError> {
         let val = read_i64(self.data, self.offset)?;
         self.offset += 8;
         Ok(val)
@@ -160,7 +160,7 @@ impl<'a> InstructionReader<'a> {
 
     /// Read a u128 and advance offset
     #[inline]
-    pub fn read_u128(&mut self) -> Result<u128, PercolatorError> {
+    pub fn read_u128(&mut self) -> Result<u128, MgkError> {
         let val = read_u128(self.data, self.offset)?;
         self.offset += 16;
         Ok(val)
@@ -168,7 +168,7 @@ impl<'a> InstructionReader<'a> {
 
     /// Read a fixed-size byte array and advance offset
     #[inline]
-    pub fn read_bytes<const N: usize>(&mut self) -> Result<[u8; N], PercolatorError> {
+    pub fn read_bytes<const N: usize>(&mut self) -> Result<[u8; N], MgkError> {
         let val = read_bytes(self.data, self.offset)?;
         self.offset += N;
         Ok(val)
@@ -176,7 +176,7 @@ impl<'a> InstructionReader<'a> {
 
     /// Read a Side enum and advance offset
     #[inline]
-    pub fn read_side(&mut self) -> Result<crate::Side, PercolatorError> {
+    pub fn read_side(&mut self) -> Result<crate::Side, MgkError> {
         let val = read_side(self.data, self.offset)?;
         self.offset += 1;
         Ok(val)

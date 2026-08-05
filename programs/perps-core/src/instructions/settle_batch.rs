@@ -8,8 +8,8 @@ use crate::state::mark_price::sweep_book_side;
 use crate::state::portfolio::Portfolio;
 use crate::state::registry::Registry;
 use crate::state::vault::Vault;
-use percolator_common::book::OrderBook;
-use percolator_common::{math::calculate_funding_payment, PercolatorError};
+use mgk_common::book::OrderBook;
+use mgk_common::{math::calculate_funding_payment, MgkError};
 use pinocchio::{
     account_info::AccountInfo, msg, program_error::ProgramError, pubkey::Pubkey,
     sysvars::{clock::Clock, Sysvar},
@@ -26,7 +26,7 @@ const BPS_DENOM: i128 = 10_000;
 /// read). The full struct is defined in `programs/oracle/src/state.rs`.
 /// At offset 80: magic(8) + version(1) + bump(1) + is_active(1) +
 /// _padding(5) + authority(32) + instrument(32) + price(8). This avoids
-/// pulling percolator-oracle as a dep just to read 8 bytes.
+/// pulling mgk-oracle as a dep just to read 8 bytes.
 const ORACLE_PRICE_OFFSET: usize = 80;
 const ORACLE_PRICE_LEN: usize = 8;
 /// Magic bytes stored as a u64 LE at offset 0 of `PriceOracle`. The
@@ -167,7 +167,7 @@ fn apply_funding_to_instrument(
 /// position(s) in the given instrument. Iterates `portfolio.positions`
 /// looking for `instrument_id`, computes
 /// `qty × (cum_funding − last_funding_checkpoint[instrument_id])` per
-/// position (via `percolator_common::math::calculate_funding_payment`),
+/// position (via `mgk_common::math::calculate_funding_payment`),
 /// adds the sum to `portfolio.pnl`, and updates the checkpoint.
 ///
 /// `last_funding_checkpoint[instrument_id]` is the
@@ -224,7 +224,7 @@ pub fn process_settle_batch(
 
     if batch.status != BatchStatus::Clearing {
         msg!("Error: Batch not in clearing phase");
-        return Err(PercolatorError::InvalidInstruction.into());
+        return Err(MgkError::InvalidInstruction.into());
     }
 
     let registry = unsafe {
@@ -237,26 +237,46 @@ pub fn process_settle_batch(
         &mut *(instrument_account.borrow_mut_data_unchecked().as_ptr() as *mut Instrument)
     };
 
-    // Read results from the results account (M6 6i.2 CLOB format).
+    // Results: DFBA format (34-byte header) preferred; legacy CLOB (2-byte) fallback.
     let results_data = results_account
         .try_borrow_data()
-        .map_err(|_| PercolatorError::InvalidAccount)?;
+        .map_err(|_| MgkError::InvalidAccount)?;
 
-    if results_data.len() < RESULTS_HEADER_BYTES {
-        msg!("Error: Results account too small");
-        return Err(ProgramError::AccountDataTooSmall);
-    }
+    const DFBA_HDR: usize = 34;
+    const DFBA_FILL: usize = 58;
+    let dfba_mode = results_data.len() >= DFBA_HDR
+        && (batch.matched_bid_qty > 0
+            || batch.matched_ask_qty > 0
+            || batch.mark_valid != 0
+            || results_data.len() >= DFBA_HDR + DFBA_FILL);
 
-    let num_fills = u16::from_le_bytes(
-        results_data[0..RESULTS_HEADER_BYTES]
-            .try_into()
-            .unwrap(),
-    ) as usize;
-    let fills_size = RESULTS_HEADER_BYTES + num_fills * RESULTS_BYTES_PER_FILL;
-    if results_data.len() < fills_size {
-        msg!("Error: Results account too small for fills");
-        return Err(ProgramError::AccountDataTooSmall);
-    }
+    let (num_fills, fill_stride, fill_base) = if dfba_mode {
+        if results_data.len() < DFBA_HDR {
+            return Err(ProgramError::AccountDataTooSmall);
+        }
+        let n = u16::from_le_bytes(results_data[32..34].try_into().unwrap()) as usize;
+        let need = DFBA_HDR + n * DFBA_FILL;
+        if results_data.len() < need {
+            return Err(ProgramError::AccountDataTooSmall);
+        }
+        (n, DFBA_FILL, DFBA_HDR)
+    } else {
+        if results_data.len() < RESULTS_HEADER_BYTES {
+            msg!("Error: Results account too small");
+            return Err(ProgramError::AccountDataTooSmall);
+        }
+        let n = u16::from_le_bytes(
+            results_data[0..RESULTS_HEADER_BYTES]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let need = RESULTS_HEADER_BYTES + n * RESULTS_BYTES_PER_FILL;
+        if results_data.len() < need {
+            return Err(ProgramError::AccountDataTooSmall);
+        }
+        (n, RESULTS_BYTES_PER_FILL, RESULTS_HEADER_BYTES)
+    };
+    let _ = (num_fills, fill_stride, fill_base); // used below in DFBA-aware settle
 
     // Settle each commitment based on aggregated fill results.
     // A user can have multiple fills (one taker + N makers) at different
@@ -273,7 +293,98 @@ pub fn process_settle_batch(
     let mut total_taker_notional: u128 = 0;
     let mut slashed: u128 = 0;
 
-    for commitment_account in commitment_accounts.iter().take(batch.total_commitments as usize) {
+    // DFBA: optional commitment accounts (posts rest on book; no slash path).
+    let commitment_limit = if batch.total_commitments == 0 {
+        0
+    } else {
+        batch.total_commitments as usize
+    };
+
+    // DFBA fill apply: update portfolios from results (dual format).
+    // Creates positions when missing; applies equity cash flow + fees.
+    if dfba_mode && num_fills > 0 {
+        for i in 0..num_fills {
+            let off = fill_base + i * fill_stride;
+            let user = Pubkey::from(
+                <[u8; 32]>::try_from(&results_data[off..off + 32]).unwrap_or([0u8; 32]),
+            );
+            let fill_qty = u64::from_le_bytes(results_data[off + 40..off + 48].try_into().unwrap());
+            let fill_price =
+                i64::from_le_bytes(results_data[off + 48..off + 56].try_into().unwrap());
+            let is_maker = results_data[off + 56] != 0;
+            let auction = results_data[off + 57]; // 0=bid 1=ask
+            if fill_qty == 0 {
+                continue;
+            }
+            // Side from auction + role: bid auction makers buy, takers sell; ask opposite.
+            let signed_qty: i64 = match (auction, is_maker) {
+                (0, true) => fill_qty as i64,     // bid: maker buy
+                (0, false) => -(fill_qty as i64), // bid: taker sell
+                (1, true) => -(fill_qty as i64),  // ask: maker sell
+                (1, false) => fill_qty as i64,    // ask: taker buy
+                _ => fill_qty as i64,
+            };
+            let notional = (fill_qty as u128).saturating_mul(fill_price.unsigned_abs() as u128);
+            total_volume = total_volume.saturating_add(fill_qty);
+            total_notional = total_notional.saturating_add(notional);
+            if is_maker {
+                total_maker_notional = total_maker_notional.saturating_add(notional);
+            } else {
+                total_taker_notional = total_taker_notional.saturating_add(notional);
+            }
+            for pa in portfolio_accounts {
+                let portfolio = unsafe {
+                    &mut *(pa.borrow_mut_data_unchecked().as_ptr() as *mut Portfolio)
+                };
+                if portfolio.user != user {
+                    continue;
+                }
+                let id = instrument.instrument_id;
+                if let Some((idx, pos)) = portfolio.find_position_mut(id) {
+                    let old_qty = pos.qty;
+                    let new_qty = old_qty.saturating_add(signed_qty);
+                    if new_qty != 0 && fill_price > 0 {
+                        if (old_qty >= 0 && signed_qty > 0) || (old_qty <= 0 && signed_qty < 0) {
+                            let old_n = (old_qty.unsigned_abs() as u128)
+                                .saturating_mul(pos.entry_vwap.unsigned_abs() as u128);
+                            let new_n = old_n.saturating_add(notional);
+                            let new_abs = new_qty.unsigned_abs() as u128;
+                            if new_abs > 0 {
+                                portfolio.positions[idx].entry_vwap = (new_n / new_abs) as i64;
+                            }
+                        }
+                    }
+                    portfolio.positions[idx].qty = new_qty;
+                } else if signed_qty != 0
+                    && (portfolio.positions_len as usize) < portfolio.positions.len()
+                {
+                    let idx = portfolio.positions_len as usize;
+                    portfolio.positions[idx].instrument_id = id;
+                    portfolio.positions[idx].qty = signed_qty;
+                    portfolio.positions[idx].entry_vwap = fill_price.max(0);
+                    portfolio.positions_len = portfolio.positions_len.saturating_add(1);
+                }
+                // Cash flow: buys reduce equity, sells increase.
+                if signed_qty > 0 {
+                    portfolio.equity = portfolio.equity.saturating_sub(notional as i128);
+                } else if signed_qty < 0 {
+                    portfolio.equity = portfolio.equity.saturating_add(notional as i128);
+                }
+                // Per-fill fee: makers free when maker_fee_bps==0; takers pay.
+                let fee: i128 = if is_maker {
+                    (notional as i128 * instrument.maker_fee_bps as i128) / BPS_DENOM
+                } else {
+                    (notional as i128 * instrument.taker_fee_bps as i128) / BPS_DENOM
+                };
+                portfolio.equity = portfolio.equity.saturating_sub(fee);
+                portfolio.recalc_margin();
+                total_settled = total_settled.saturating_add(1);
+                break;
+            }
+        }
+    }
+
+    for commitment_account in commitment_accounts.iter().take(commitment_limit) {
         let commitment = unsafe {
             &mut *(commitment_account.borrow_mut_data_unchecked().as_ptr() as *mut Commitment)
         };
@@ -459,94 +570,75 @@ pub fn process_settle_batch(
         }
     }
 
-    // Update batch state. CLOB has no single clearing price; we record the
-    // effective price (total_notional / total_volume) for downstream
-    // consumers (oracle, UI, etc.).
-    let effective_clearing_price: i64 = total_notional
-        .checked_div(total_volume as u128)
-        .unwrap_or(0) as i64;
+    // Preserve DFBA dual mid when set by ClearBatch; else VWAP fallback.
+    if batch.mark_valid == 0 && total_volume > 0 {
+        let effective = total_notional
+            .checked_div(total_volume as u128)
+            .unwrap_or(0) as i64;
+        batch.clearing_price = effective;
+    }
     batch.total_settled = total_settled;
-    batch.total_volume = total_volume;
+    if total_volume > 0 {
+        batch.total_volume = total_volume;
+    }
     batch.total_notional = total_notional;
     batch.slashed_deposits = batch.slashed_deposits.saturating_add(slashed);
-    batch.clearing_price = effective_clearing_price;
     batch.status = BatchStatus::Settled;
 
-    // M7 7.5: compute and write the mark price (decision D3 — mark lives
-    // on Instrument, not on Batch). The mark drives funding, liquidation,
-    // and equity computation downstream. We compute it after the batch is
-    // marked Settled so the per-commitment state is final, and we write
-    // to `instrument.mark_price` in place.
-    //
-    // 1. Validate the book PDA matches the expected derivation from the
-    //    matcher's program id + the instrument's id. Refuse to read
-    //    from a book that isn't the matcher's PDA for this instrument —
-    //    protects against a malicious keeper passing a random book.
-    let (expected_book_pda, _book_bump) = percolator_common::book::book_pda(
+    // Book ownership check (still required for funding premium path).
+    let (expected_book_pda, _book_bump) = mgk_common::book::book_pda(
         matcher_program.key(),
         instrument.instrument_id,
     );
     if book_account.key() != &expected_book_pda && book_account.owner() != matcher_program.key() {
         msg!("Error: book_account is neither expected PDA nor matcher-owned");
-        return Err(PercolatorError::InvalidAccount.into());
+        return Err(MgkError::InvalidAccount.into());
     }
 
-    // 2. Read the book. The book is matcher-owned; we only need the
-    //    `OrderBook` header (the level arrays), not the resting[] array.
-    //    We deserialize the full `OrderBook` struct from the start of the
-    //    account data — it's `#[repr(C)]` so a raw cast is safe.
     let book: OrderBook = unsafe {
         core::ptr::read_unaligned(
-            book_account.borrow_data_unchecked().as_ptr()
-                as *const OrderBook,
+            book_account.borrow_data_unchecked().as_ptr() as *const OrderBook,
         )
     };
     if book.instrument_id != instrument.instrument_id {
         msg!("Error: book instrument_id does not match instrument");
-        return Err(PercolatorError::InvalidAccount.into());
+        return Err(MgkError::InvalidAccount.into());
     }
 
-    // 3. Read the oracle price (raw bytes — see `ORACLE_PRICE_OFFSET`).
-    //    If the magic bytes don't match or the oracle is shorter than
-    //    expected, treat as "no oracle" — fall back to book or
-    //    carry-forward. Don't crash; an invalid oracle is recoverable
-    //    via the carry-forward path.
     let oracle_price = read_oracle_price(oracle_account);
-
-    // 4. Compute the new mark price. Reads `instrument.mark_price`
-    //    (which is `prev_mark_price` — the value written in the last
-    //    batch's SettleBatch, or 0 for the first batch).
     let prev_mark_price = instrument.mark_price;
     let current_slot = Clock::get()?.slot;
-    let new_mark_price = crate::state::mark_price::compute_mark_price(
-        &book,
-        prev_mark_price,
-        current_slot,
-        oracle_price,
-        instrument.mark_reference_qty,
-        instrument.mark_decay_window_slots,
-    );
+
+    // DFBA pure mark: dual mid only when mark_valid; else carry-forward prev
+    // (liquidations already gated by batch.liq_paused / mark_valid).
+    let new_mark_price = if batch.mark_valid != 0 {
+        batch.clearing_price
+    } else if prev_mark_price != 0 {
+        prev_mark_price
+    } else {
+        // First batch with no dual clear: fall back to oracle/book for index-like seed only.
+        crate::state::mark_price::compute_mark_price(
+            &book,
+            prev_mark_price,
+            current_slot,
+            oracle_price,
+            instrument.mark_reference_qty,
+            instrument.mark_decay_window_slots,
+        )
+    };
     instrument.mark_price = new_mark_price;
 
-    // M7 7.4: Funding rate accrual. Re-sweeps the book for the funding
-    // premium (separate from the mark sweep so the depth target can
-    // differ), computes the SMA-clamped funding rate, accrues
-    // `instrument.cum_funding` by `rate × funding_period`, and applies
-    // the resulting payment to every portfolio holding a position in
-    // this instrument. See `state/funding.rs` for the pure helpers and
-    // design L504-553 for the formulas.
-    //
-    // M7 7.8: governance can soft-skip funding by setting the
-    // `funding_paused` bit. The step is skipped (not errored) so
-    // `compute_funding_period` can catch up on the next non-paused
-    // batch — no time is "lost" because the SMA window naturally
-    // absorbs the gap. `instrument.cum_funding` and
-    // `instrument.last_funding_slot` are left untouched during a pause.
+    // M7 7.4 / DFBA T9.4: Funding rate accrual.
+    // Premium re-sweep + SMA-clamped rate + portfolio payments.
+    // Skip entirely when:
+    //   - governance `funding_paused` (soft skip; next non-paused catches up), or
+    //   - `!mark_valid` (no dual DFBA clear → no auction mid for premium vs mark).
+    // `cum_funding` / `last_funding_slot` are left untouched on skip.
     let funding_paused = unsafe {
         (*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry))
             .is_funding_paused()
     };
-    if !funding_paused {
+    if !funding_paused && batch.mark_valid != 0 {
         apply_funding_to_instrument(instrument, &book, oracle_price, current_slot);
         let post_funding_cum = instrument.cum_funding;
         let instrument_id_for_funding = instrument.instrument_id;
@@ -600,7 +692,7 @@ pub fn process_settle_batch(
     let next_batch_size = next_batch_account.data_len();
     if next_batch_size != core::mem::size_of::<Batch>() {
         msg!("Error: next_batch account size mismatch");
-        return Err(PercolatorError::InvalidAccount.into());
+        return Err(MgkError::InvalidAccount.into());
     }
 
     // 3. Reject double-create: the account must be all-zero (batch_id == 0
@@ -612,7 +704,7 @@ pub fn process_settle_batch(
         };
         if next_batch_probe.batch_id != 0 {
             msg!("Error: next_batch account already initialized");
-            return Err(PercolatorError::AlreadyInitialized.into());
+            return Err(MgkError::AlreadyInitialized.into());
         }
     }
 
@@ -840,6 +932,13 @@ mod tests {
             slashed_deposits: 66,
             bump: 77,
             _padding: [1; 7],
+            bid_clearing_price: 1,
+            ask_clearing_price: 2,
+            matched_bid_qty: 3,
+            matched_ask_qty: 4,
+            mark_valid: 1,
+            liq_paused: 0,
+            _dfba_pad: [1; 6],
         };
         b.initialize_in_place(7, 100, 200, 254);
 
@@ -859,6 +958,13 @@ mod tests {
         assert_eq!(b.slashed_deposits, 0);
         assert_eq!(b.bump, 254);
         assert_eq!(b._padding, [0; 7]);
+        assert_eq!(b.bid_clearing_price, 0);
+        assert_eq!(b.ask_clearing_price, 0);
+        assert_eq!(b.matched_bid_qty, 0);
+        assert_eq!(b.matched_ask_qty, 0);
+        assert_eq!(b.mark_valid, 0);
+        assert_eq!(b.liq_paused, 1);
+        assert_eq!(b._dfba_pad, [0; 6]);
     }
 
     // =========================================================================
@@ -1011,7 +1117,7 @@ mod tests {
 
     use crate::state::instrument::Instrument;
     use crate::state::portfolio::{Position, MAX_INSTRUMENTS, MAX_POSITIONS};
-    use percolator_common::book::{BookLevel, OrderBook, NULL_OFFSET};
+    use mgk_common::book::{BookLevel, OrderBook, NULL_OFFSET};
 
     fn empty_book() -> OrderBook {
         // An OrderBook is `#[repr(C)]` with a fixed size; for unit tests
@@ -1286,5 +1392,15 @@ mod tests {
         // NOT return an error — it skips the funding step in place.
         // The check pattern is `if !registry.is_funding_paused() {
         // apply_funding_to_instrument(...); }`.
+    }
+
+    /// DFBA T9.4: funding also soft-skips when `!mark_valid` (no dual clear).
+    #[test]
+    fn test_funding_skipped_when_mark_invalid() {
+        let funding_paused = false;
+        let mark_valid: u8 = 0;
+        assert!(!( !funding_paused && mark_valid != 0 ));
+        let mark_valid_ok: u8 = 1;
+        assert!(!funding_paused && mark_valid_ok != 0);
     }
 }

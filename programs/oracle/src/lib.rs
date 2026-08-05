@@ -1,4 +1,4 @@
-//! Percolator Oracle Program
+//! MGK Oracle Program
 //!
 //! Minimal price oracle for Surfpool testing. Provides price feeds for instruments.
 //!

@@ -6,7 +6,7 @@ use pinocchio::{
     pubkey::Pubkey,
     ProgramResult,
 };
-use percolator_common::PercolatorError;
+use mgk_common::MgkError;
 
 pub fn process_init_portfolio(
     portfolio_account: &AccountInfo,
@@ -40,7 +40,7 @@ pub fn process_init_portfolio(
     // If user field is non-zero but doesn't match signer, reject.
     if portfolio_data.user != Pubkey::from([0u8; 32]) {
         msg!("Error: Portfolio already initialized for different user");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     portfolio_data.initialize_in_place(*user, 0);

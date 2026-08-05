@@ -1,5 +1,5 @@
 use crate::state::{Portfolio, Registry, Vault};
-use percolator_common::PercolatorError;
+use mgk_common::MgkError;
 use pinocchio::{
     account_info::AccountInfo,
     msg,
@@ -22,34 +22,34 @@ pub fn process_withdraw(
     let registry = unsafe { &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry) };
     if registry.is_withdrawals_paused() {
         msg!("Error: Withdrawals are paused");
-        return Err(PercolatorError::OperationPaused.into());
+        return Err(MgkError::OperationPaused.into());
     }
 
     if amount == 0 {
         msg!("Error: Withdraw amount must be greater than zero");
-        return Err(PercolatorError::InvalidQuantity.into());
+        return Err(MgkError::InvalidQuantity.into());
     }
 
     if !user_account.is_signer() {
         msg!("Error: User must be a signer");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     if portfolio.user != *user_account.key() {
         msg!("Error: Portfolio does not belong to user");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     // Check free collateral
     if (amount as i128) > portfolio.free_collateral {
         msg!("Error: Insufficient free collateral");
-        return Err(PercolatorError::InsufficientFunds.into());
+        return Err(MgkError::InsufficientFunds.into());
     }
 
     // Check vault has enough
     if amount > vault.balance {
         msg!("Error: Vault insufficient balance");
-        return Err(PercolatorError::InsufficientFunds.into());
+        return Err(MgkError::InsufficientFunds.into());
     }
 
     // Transfer SOL from vault to user
@@ -64,10 +64,10 @@ pub fn process_withdraw(
     let amount_i128 = amount as i128;
     portfolio.principal = portfolio.principal
         .checked_sub(amount_i128)
-        .ok_or(PercolatorError::Underflow)?;
+        .ok_or(MgkError::Underflow)?;
     portfolio.equity = portfolio.equity
         .checked_sub(amount_i128)
-        .ok_or(PercolatorError::Underflow)?;
+        .ok_or(MgkError::Underflow)?;
     portfolio.recalc_margin();
 
     msg!("Withdraw successful");
@@ -88,7 +88,7 @@ mod tests {
         let mut r = Registry::new(Pubkey::from([9u8; 32]));
         r.set_pause_flags(PAUSE_WITHDRAWALS);
         assert!(r.is_withdrawals_paused());
-        let err: u64 = PercolatorError::OperationPaused.into();
+        let err: u64 = MgkError::OperationPaused.into();
         assert_eq!(err, 602);
     }
 }
