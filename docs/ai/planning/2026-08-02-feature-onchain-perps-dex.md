@@ -247,6 +247,43 @@ Design remaining-work items 3–11. Do **not** start these until the persona fil
 | **T9.10.6 Stop first-batch book/oracle mark seed** | **Done 2026-08-24** | Pure settlement-mark selector: valid→clearing_price; invalid→carry prev; invalid-first→zero. Removed `compute_mark_price` from settle path. 4 T9.10.6 tests pass |
 | **T9.10.7 Reduce-only / flatten UX + paper fill-lot tests** | **Done 2026-08-24** | Reduce-only enforcement at post time (ReduceOnlyViolation=606); 8 unit tests; SDK error mapping; prepare-close UX with exact fixed-point parsing; positionQty prop; 3 Playwright wallet e2e tests; 12 new OrderForm vitest tests |
 
+### M9.11 — Public devnet release & rollout (2026-08-24)
+
+Release the completed DFBA work through a reviewed PR into `origin/master`, then roll out the exact merge commit to Render and Vercel. Devnet-only; does not deploy a new program ID or target mainnet.
+
+| Task | Status | Outcome / scope | Dependencies | Validation / linked scenarios |
+|------|--------|-----------------|--------------|-------------------------------|
+| **T9.11.1 Checkpoint branches** | **Done 2026-08-24** | `checkpoint/main-pre-dfba-rollout-20260824` (from origin/master HEAD) and `checkpoint/dfba-pre-rollout-20260824` (from feature-dfba-auction HEAD). Excludes `.env`, keypairs, caches, build output, `.playwright-mcp`, and the untracked Playwright skill copy | Existing branches | `git branch -l checkpoint/` shows both | 
+| **T9.11.2 Indexer read-only conversion** | **Done 2026-08-24** | Removed embedded `startKeeper()` call and all keeper/oracle variables from `mgk-frontend/apps/indexer/src/main.ts`. Removed `POST /api/portfolio/request-creation` endpoint and portfolio queue references from `portfolio.ts`. Indexer is now a pure sync/API service (health, markets, trades, book, batch, fills, portfolio address lookup). | Existing indexer code | Indexer builds (tsc), 87 tests pass, `/api/healthz` returns read-only status |
+| **T9.11.3 Wallet-funded portfolio creation (disc 19)** | **Done 2026-08-24** | Replaced `POST /api/portfolio/request-creation` queue dependency in `useAccountActions.ts` with direct wallet-funded `InitPortfolioForUser` (disc 19). Connected wallet signs as fee-payer and user; PDA created via `invoke_signed` in the same tx. No indexer round-trip needed. | T9.11.2, existing SDK `encodeInitPortfolioForUser` | Web tests (486 pass); manual: wallet connect → init portfolio → PDA appears on-chain |
+| **T9.11.4 InitPortfolioForUser on-chain hardening** | **Done 2026-08-24** | Updated `programs/perps-core/src/instructions/init_portfolio_for_user.rs`: added `requested_user == signer` validation when 2-account (wallet-funded) path; preserves 3-account (keeper-signed) path for backward compatibility. Prevents one user from creating another user's portfolio. | Existing init_portfolio_for_user.rs | cargo test (114 pass); clippy clean |
+| **T9.11.5 Standalone ops-keeper.js** | **Done 2026-08-24** | Created `tools/ops-keeper.js`: hardened batch lifecycle cranker with unique settlement PDAs from cleared DFBA results (replaces hardcoded persona addresses), dynamic liquidation discovery via filtered `getProgramAccounts` core-program scans, `PORTFOLIO_ADDRESSES` as optional override only, fail-closed after `MAX_CONSECUTIVE_ERRORS` (default 5), deadline-gated close/clear/settle, `KEEPER_KEYPAIR_FILE` env for Render secret mounting, local fallback to `~/.config/solana/id.json`. | T9.10.2, T9.10.4 | Node.js `--test` (14 pass); manual: `node ops-keeper.js --loop --interval 5000` on devnet |
+| **T9.11.6 Standalone ops-oracle.js** | **Done 2026-08-24** | Created `tools/ops-oracle.js`: multi-venue quorum (binance, okx, bybit) with `ORACLE_AUTHORITY_KEYPAIR_FILE` env for Render secret mounting, freshness check (default 30s), deviation check (default 50bps), local fallback to `~/.config/solana/mgk-oracle-keypair.json`. Median price from quorum with outlier filtering. | T9.10.3 | Node.js `--test` (existing); manual: `node ops-oracle.js --loop` posts fresh price within 30s |
+| **T9.11.7 Render Blueprint (render.yaml)** | **Done 2026-08-24** | Created root `render.yaml` with 3 services: `mgk-indexer` (web, Node 22, SQLite disk at `/var/data`, `/api/healthz`, `DB_PATH=/var/data/mgk-indexer.db`), `mgk-keeper` (worker, `node ops-keeper.js --loop --interval 5000`, auto-deploy off), `mgk-oracle` (worker, `node ops-oracle.js --loop`, auto-deploy off). Keeper and oracle workers have `autoDeploy: false` for controlled cutover. | T9.11.5, T9.11.6 | Render Blueprint validates; services start without errors |
+| **T9.11.8 Vercel consolidation** | **Done 2026-08-24** | Consolidated Vercel config at repo root `vercel.json`, pinned Node 22.x, set canonical program/account IDs as public env vars. `NEXT_PUBLIC_BATCH_ADDRESS` unset (dynamic). Updated `.gitignore` for secrets, caches, Playwright artifacts. | Existing vercel.json | `pnpm -F web build` succeeds; env vars visible in Vercel project settings |
+| **T9.11.9 Canonical address defaults** | **Done 2026-08-24** | All services use canonical addresses: Core `C7w2mKz2KQgDroNNhACm9MutXhPiesVr9Gn2x8TDsRYx`, Matcher `7WiZuunbPGciCedsVTguvjezwwzrhmXG5HkdCuHizbNC`, Oracle `CsSqVZMoXixNYstNhTtixeT4pyRgrYnXdpfoXQBgFPqZ`, PriceOracle `5NSDGAaRqfxe6mkZG9fEAZdzK4r77nEBEobohZGYP6PN`, Instrument `Hz9UtmSXyKFnp1pGvrhrAmizMsvEkYRh5Eih1r7Lf1hG`. Batch address remains dynamic. | T9.11.7, T9.11.8 | render.yaml, vercel.json, config.ts, ops-keeper.js, ops-oracle.js all reference correct addresses |
+| **T9.11.10 T9.11 rollout docs** | **Done 2026-08-24** | Added planning (`2026-08-24-dfba-devnet-rollout.md`), deployment (`2026-08-24-dfba-devnet-rollout.md`), and implementation (`2026-08-24-dfba-devnet-rollout.md`) docs with service configuration, key addresses, deployment steps, acceptance criteria, and rollback procedure. | T9.11.1–9 | ai-devkit lint passes |
+| **T9.11.11 All-gates pass & PR open** | **Done 2026-08-24** | All checks green: ai-devkit lint, cargo clippy (clean), cargo test (114 pass), SDK build + test (162 pass), indexer build + test (87 pass), web build + test (486 pass), git diff --check. PR #1 created against `origin/master` with auto-merge enabled (squash). | T9.11.1–10 | GitHub PR #1 visible; auto-merge enabled |
+| **T9.11.12 Post-merge deployment checklist** | **Pending** | Execute after PR merge: (1) deploy read-only production indexer, (2) generate keeper+oracle keypairs outside repo, rotate PriceOracle authority, start oracle worker, (3) start keeper worker, verify batch transition, (4) deploy exact merge commit to Vercel production, (5) verify mgkprotocol.vercel.app, (6) fast-forward local main to origin/master, (7) remove temporary preview indexer. | T9.11.11 merged, Render/Vercel access, oracle authority keypair | Render service health checks pass; Vercel deployment succeeds; on-chain oracle freshness < 30s; batch transition observed |
+| **T9.11.13 Smoke test validation** | **Pending** | After deployment: (1) portfolio init via wallet-funded disc 19 succeeds, (2) opposing maker/taker orders produce fills, (3) close + dual clear + settlement + mark_valid=1, (4) prepare-close/reduce-only decreases position, (5) oracle quorum within 30s/50bps, (6) indexer restart preserves fills on disk, (7) worker logs contain no secrets. | T9.11.12 | All acceptance criteria met |
+
+#### Service configuration reference
+
+| Service | Type | Runtime | Key env | Auto-deploy |
+|---------|------|---------|---------|-------------|
+| mgk-indexer | Web (read-only) | Node 22, SQLite disk | `DB_PATH=/var/data/mgk-indexer.db`, `CORE_PROGRAM_ID`, `MATCHER_PROGRAM_ID`, `REGISTRY_ADDRESS` | Yes |
+| mgk-keeper | Background worker | Node 22, `ops-keeper.js` | `KEEPER_KEYPAIR_FILE`, `RPC_URL`, `BOOK_ADDRESS`, `INTERVAL=5000` | No |
+| mgk-oracle | Background worker | Node 22, `ops-oracle.js` | `ORACLE_AUTHORITY_KEYPAIR_FILE`, `PRICE_ORACLE_ADDRESS`, `INSTRUMENT_ADDRESS`, `QUORUM_VENUES` | No |
+| mgk-frontend | Static/SSR | Vercel, Node 22 | `NEXT_PUBLIC_*` program/account IDs, `NEXT_PUBLIC_INDEXER_URL` | Yes |
+
+#### Rollback procedure
+
+1. **Suspend faulty worker first** (keeper or oracle) → preserves single-writer invariant
+2. **Revert Vercel** independently if frontend is affected
+3. **Keep healthy oracle** running when rolling back indexer/frontend code
+4. **If oracle rollback needed:** rotate authority explicitly; never run two publishers concurrently
+5. **Indexer:** redeploy previous commit; SQLite data persists on disk
+
 ## Sequencing
 
 ```text
@@ -259,10 +296,10 @@ Post-M9 ops ───────── Devnet dual-fill + frontend M9 wire + mo
 M9.8 frontend ─────── remainder closed 2026-08-20 (T9.8.7); T9.8.5 regression keep
 M9.9 matching proof ─ DONE 2026-08-20 (T9.9.1–5)
 M9.10 working-devnet ─ DONE (T9.10.1–7 + devnet deploy 2026-08-24)
+M9.11 devnet release ─ Code DONE (T9.11.1–11); deployment T9.11.12–13 pending merge
 ```
 
-**Critical path remaining:** T9.8.5 Positions flicker stays a
-regression watch (blocker #10). Security review remains mandatory before mainnet.
+**Critical path remaining:** T9.11.12 post-merge deployment (Render + Vercel) and T9.11.13 smoke test validation. T9.8.5 Positions flicker stays a regression watch. Security review remains mandatory before mainnet.
 
 ## Test scenario → task map
 
@@ -310,6 +347,16 @@ regression watch (blocker #10). Security review remains mandatory before mainnet
 | T-PREPARE-CLOSE | OrderForm prepare-close: long→sell/reduce-only, short→buy/reduce-only, exact qty | T9.10.7 | ✅ 2026-08-24 12 vitest + 3 Playwright e2e |
 | T-FIXED-POINT-PARSE | Exact 6-decimal fixed-point parsing replaces parseFloat×1e6 | T9.10.7 | ✅ 2026-08-24 parseFixed6/formatFixed6 vitest |
 | T-POSITION-DISPLAY | Signed position display in order form summary | T9.10.7 | ✅ 2026-08-24 vitest |
+| T-READ-ONLY-INDEXER | Indexer has no embedded keeper or oracle; `/api/healthz` returns read-only status | T9.11.2 | ✅ 2026-08-24 tsc + 87 tests pass |
+| T-WALLET-DISC-19 | Wallet-funded InitPortfolioForUser (disc 19) creates PDA without indexer queue | T9.11.3 | ✅ 2026-08-24 486 web tests pass |
+| T-INIT-USER-SIGNER | InitPortfolioForUser validates requested_user == signer on 2-account path | T9.11.4 | ✅ 2026-08-24 cargo test 114 pass |
+| T-OPS-KEEPER-STANDALONE | Standalone keeper: unique settlement PDAs, liquidation discovery, fail-closed | T9.11.5 | ✅ 2026-08-24 committed; manual devnet test pending deployment |
+| T-OPS-ORACLE-QUORUM | Standalone oracle: 3-venue quorum, freshness < 30s, deviation < 50bps | T9.11.6 | ✅ 2026-08-24 committed; manual devnet test pending deployment |
+| T-RENDER-BLUEPRINT | render.yaml Blueprint with 3 services, auto-deploy off for workers | T9.11.7 | ✅ 2026-08-24 committed; Render validation pending |
+| T-VERCEL-CONSOLIDATE | Root vercel.json with Node 22, canonical IDs, no BATCH_ADDRESS | T9.11.8 | ✅ 2026-08-24 committed; Vercel build succeeds |
+| T-ALL-GATES-PASS | All lint/clippy/test/build gates green; PR open with auto-merge | T9.11.11 | ✅ 2026-08-24 114+162+87+486 tests, clippy clean, PR #1 |
+| T-POST-MERGE-DEPLOY | Post-merge: indexer, oracle rotation, keeper, Vercel promote, main ff | T9.11.12 | Pending merge |
+| T-SMOKE-VALIDATION | Smoke: portfolio init, dual fill, mark_valid=1, oracle freshness, indexer persistence | T9.11.13 | Pending T9.11.12 |
 
 ## Risks & blockers
 
@@ -630,9 +677,26 @@ regression watch (blocker #10). Security review remains mandatory before mainnet
 - SDK: `PercolatorError.ReduceOnlyViolation = 606` + `encodeSetFundingParams`
 - Devnet: disc 23 oracle binding `26G5oZBq…`, multi-venue post `5yJFzRB5…`, batch 20 settle `2BYRK69U…`
 - AI DevKit feature lint: pre-existing warnings (TradingViewWidget, indexer syncer) not from this session
-- Pending: devnet core upgrade + SetFundingParams invoke, security review before mainnet
+- Pending: post-merge deployment (T9.11.12), smoke tests (T9.11.13), security review before mainnet
 
-**Open task count:** M9.10 T9.10.1–7 are done (2026-08-24). Security review remains before mainnet.
+### Session X — T9.11 Public devnet release & rollout (2026-08-24)
+
+| # | Item | Planning outcome |
+|---|------|------------------|
+| 1 | T9.11.1 Checkpoint branches | `checkpoint/main-pre-dfba-rollout-20260824` and `checkpoint/dfba-pre-rollout-20260824` created from current HEAD. Excludes `.env`, keypairs, caches, Playwright artifacts |
+| 2 | T9.11.2 Indexer read-only | Removed `startKeeper()` call, keeper/oracle variables from `main.ts`. Removed `POST /api/portfolio/request-creation` and queue references from `portfolio.ts`. Indexer is pure sync/API |
+| 3 | T9.11.3 Wallet disc 19 | `useAccountActions.ts` now sends `InitPortfolioForUser` (disc 19) directly from connected wallet. No indexer queue round-trip. PDA created via `invoke_signed` in same tx |
+| 4 | T9.11.4 On-chain hardening | `init_portfolio_for_user.rs`: added `requested_user == signer` validation on 2-account (wallet) path; preserves 3-account (keeper) path |
+| 5 | T9.11.5 Standalone keeper | `tools/ops-keeper.js`: unique settlement PDAs from cleared DFBA results, dynamic liquidation discovery via `getProgramAccounts` scans, `PORTFOLIO_ADDRESSES` optional override, fail-closed after `MAX_CONSECUTIVE_ERRORS`, `KEEPER_KEYPAIR_FILE` env |
+| 6 | T9.11.6 Standalone oracle | `tools/ops-oracle.js`: 3-venue quorum (binance/okx/bybit), freshness (30s) + deviation (50bps) checks, `ORACLE_AUTHORITY_KEYPAIR_FILE` env, local fallback |
+| 7 | T9.11.7 Render Blueprint | Root `render.yaml`: mgk-indexer (web, SQLite disk), mgk-keeper (worker, auto-deploy off), mgk-oracle (worker, auto-deploy off) |
+| 8 | T9.11.8 Vercel consolidation | Root `vercel.json` pinned Node 22, canonical IDs, no `BATCH_ADDRESS`. `.gitignore` updated for secrets/caches/Playwright |
+| 9 | T9.11.9 Canonical addresses | All services use Core `C7w2mKz…`, Matcher `7WiZuun…`, PriceOracle `5NSDGAa…`, Instrument `Hz9Utm…` |
+| 10 | T9.11.10 Rollout docs | Planning, deployment, implementation docs with service config, addresses, steps, acceptance criteria, rollback |
+| 11 | T9.11.11 All gates + PR | ai-devkit lint ✓, clippy ✓, cargo test 114 ✓, SDK 162 ✓, indexer 87 ✓, web 486 ✓. PR #1 created with auto-merge |
+| 12 | T9.11.12–13 Pending | Post-merge deployment + smoke tests await merge |
+
+**Open task count:** M9.11 T9.11.1–11 done (2026-08-24). T9.11.12–13 pending merge. Security review remains before mainnet.
 
 **Blockers / residual issues:**
 
@@ -673,15 +737,18 @@ regression watch (blocker #10). Security review remains mandatory before mainnet
 | 13 | **T9.8.6 Keeper-lag visibility** | P1 | **Done 2026-08-20** | elapsed wait copy + indexer `/api/healthz` lag/lastBatch |
 | 14 | **T9.8.7 Retire remaining legacy web affordances** | P1 | **Done 2026-08-20** | active UI/tests are PostOrder-only; SDK slashed taxonomy kept |
 | 15 | **T9.10.*** Working-devnet follow-on | P1 | **Done 2026-08-24** (T9.10.1–7) | Security review before mainnet |
-| 16 | **Security review** — `solana-fender-mcp` + QEDGen | P1 | Not started | before mainnet |
-| 17 | program-test CU budget / un-ignore 4 e2e tests | P1 | Open | harness only; not prod |
-| 18 | **Indexer** PDA-batch/oracle/rate-limit polish | P2 | Partial | M9 IDs wired |
-| 19 | ~~**Multi-venue oracle** for index~~ | ~~P2~~ | **Done 2026-08-24** | T9.10.3 shipped (`oracle-sources.js`, `ops-oracle.js`) |
+| 16 | **T9.11.1–11 Public devnet release code** | P0 | **Done 2026-08-24** | Indexer read-only, wallet disc 19, standalone workers, render.yaml, Vercel, PR #1 |
+| 17 | **T9.11.12 Post-merge deployment** | P0 | **Pending** | Merge PR #1 → Render deploy → Vercel promote → main ff |
+| 18 | **T9.11.13 Smoke test validation** | P0 | **Pending** | After T9.11.12: portfolio init, dual fill, mark_valid, oracle freshness |
+| 19 | **Security review** — `solana-fender-mcp` + QEDGen | P1 | Not started | before mainnet |
+| 20 | program-test CU budget / un-ignore 4 e2e tests | P1 | Open | harness only; not prod |
+| 21 | **Indexer** PDA-batch/oracle/rate-limit polish | P2 | Partial | M9 IDs wired |
+| 22 | **T9.8.5 Positions/Portfolio visual stability** | P0 | **Implemented** | regression watch; not a new slice |
 
 ### Suggested next 2–3 actions (when resuming)
 
-1. **Devnet deployment:** upgrade core program, invoke SetFundingParams disc 24 with 10000/50/100, verify raw field readback + cursor reset.
-2. **T9.8.5 regression:** Positions/Portfolio visual stability remains a keep-watch, not a new slice. Do not rewrite matching.
+1. **Post-merge deployment (T9.11.12):** After PR #1 merges, deploy read-only indexer, rotate oracle authority, start keeper+oracle workers, promote Vercel, verify production URLs.
+2. **Smoke test (T9.11.13):** Portfolio init via wallet disc 19, dual fill, mark_valid=1, oracle freshness < 30s, indexer persistence across restart.
 3. **Security review:** `solana-fender-mcp` + QEDGen before mainnet.
 
 ## Historical plan
@@ -696,35 +763,38 @@ proven on live batch 11: playwright-cli personas posted a dual-auction set,
 `keeper-crank.js` settled, `mark_valid=1`. 2026-08-09 Playwright MCP remains
 historical self-trade skip.
 
-**Approved M9.8 remainder is closed (T9.8.7 done 2026-08-20).** Do not use
-Playwright MCP. Do not treat `pnpm e2e:wallet` as a fill. M9.10 is in
-progress (T9.10.1–2 done). Do not rewrite matching.
+**M9.11 public devnet release code is complete (T9.11.1–11, 2026-08-24).**
+All gates passed (114 Rust + 162 SDK + 87 indexer + 486 web tests, clippy
+clean, ai-devkit lint). PR #1 created against `origin/master` with
+auto-merge enabled. Key changes: indexer converted to read-only sync/API
+(no embedded keeper/oracle); frontend portfolio creation uses wallet-funded
+InitPortfolioForUser (disc 19) directly; standalone ops-keeper.js and
+ops-oracle.js workers with unique settlement PDAs, liquidation discovery,
+fail-closed behavior, and multi-venue quorum; Render Blueprint with
+auto-deploy disabled for transactional workers; consolidated Vercel config
+pinned to Node 22 with canonical program/account IDs.
 
-**Ops verified (2026-08-06):** vault size fix (80 B), matcher-owned book keypair, SettleBatch next-batch PDA create + registry counter raw write, `tools/{init-protocol,keeper-crank,trade-e2e}.js`. Multi-batch Close→Clear→Settle succeeded; dual-side PostOrder fill produced `markValid=1`. Empty-book Clear on devnet ≈ **2.6k CU** (production-safe for thin books).
+**Pending after merge (T9.11.12–13):** Deploy read-only production indexer,
+rotate oracle authority, start keeper+oracle workers, promote Vercel
+deployment, smoke-test portfolio init + dual fill + mark_valid + oracle
+freshness. Rollback is component-specific: suspend worker first, revert
+Vercel independently, never run two oracle publishers concurrently.
 
-**Frontend (through 2026-08-20):** M9 program IDs, open-batch resolution, and
-`encodePostOrder` exist. Deterministic PostOrder construction, truthful
+**Ops verified (2026-08-06):** vault size fix (80 B), matcher-owned book
+keypair, SettleBatch next-batch PDA create + registry counter raw write,
+`tools/{init-protocol,keeper-crank,trade-e2e}.js`. Multi-batch
+Close→Clear→Settle succeeded; dual-side PostOrder fill produced
+`markValid=1`. Empty-book Clear on devnet ≈ **2.6k CU**.
+
+**Frontend (through 2026-08-24):** M9 program IDs, open-batch resolution,
+and `encodePostOrder` exist. Wallet-funded portfolio creation (disc 19)
+replaces the indexer queue. Deterministic PostOrder construction, truthful
 header/status intent, and portfolio refresh stability are evidenced.
-Origin hydration (T9.8.1), chart states (T9.8.3), the visible DFBA
-lifecycle (T9.8.4), keeper lag (T9.8.6), and legacy affordances (T9.8.7)
-are closed. Positions flicker (T9.8.5) remains a regression.
+Positions flicker (T9.8.5) remains a regression.
 
-**Scope changes (2026-08-20):** Matching-proof harness is playwright-cli
-personas, not MCP. Live window stays `t_min=2`, `t_max=150`, `n_min=1`. Locked
-maker fee is **0 bps**; live instrument retuned T9.10.1 (was leftover −2). Book remains a
-client-created keypair account (not CPI PDA) due to 10KB create cap.
+**Risks / upcoming focus:** Post-merge deployment (Render + Vercel);
+smoke test validation; Helius 429s; stale resting orders from other
+wallets; security review before mainnet.
 
-**Risks / upcoming focus:** Helius 429s; stale resting orders from other
-wallets participating in DFBA; cash `qty * price` equity scale (intentional
-current formula); secrets in snapshots. Controlled invited alpha is closer;
-M9.10 remains before calling working-devnet done. Security review before
-mainnet.
-
-**Task tracing:** unavailable because this was a direct `dev-planning`
-continuation, not a parent `dev-lifecycle` run with an established task.
-
-**Planning stop (Phase 6):** Session V reconciled T9.10.4 (indexer health /
-lag) and implemented T9.10.5 (D7 funding rate). Clippy + 362 tests pass.
-Devnet deployment + SetFundingParams invoke + oracle refresh + dual-valid
-DFBA batch remain for verification. M9.10 is now complete. Do not rewrite
-matching.
+**Planning stop (Phase 6):** T9.11 reconciled 2026-08-24. Code complete,
+PR open with auto-merge. Deployment and smoke tests pending merge.
