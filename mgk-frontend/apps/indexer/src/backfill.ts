@@ -1,7 +1,8 @@
 import { Connection, PublicKey } from '@solana/web3.js';
+import bs58 from 'bs58';
 import * as sdk from '@mgk/sdk';
 import type { Store } from './store.js';
-import { decodeBatchEvent, decodeFills } from './decoder.js';
+import { decodeBatchEvent, decodeDfbaFills, decodeFills } from './decoder.js';
 import { aggregateCandles } from './aggregator.js';
 
 export interface BackfillResult {
@@ -72,10 +73,11 @@ async function backfillBatchEvents(
  * mgk programs, and extract fills from SettleBatch instructions.
  *
  * SettleBatch (disc 8) account layout per entrypoint L559–562:
- *   account[3] = results_account (holds CLOB matching results: 2-byte
- *   num_fills header + N×49-byte fill records).
+ *   account[0] = batch, account[3] = results_account. The results account is
+ *   decoded as DFBA when the batch carries dual-auction state, with the
+ *   legacy CLOB format retained for older settled batches.
  */
-async function backfillTransactions(
+export async function backfillTransactions(
   connection: Connection,
   store: Store,
   corePk: PublicKey,
@@ -96,8 +98,11 @@ async function backfillTransactions(
 
       for (const txResp of block.transactions) {
         const msg = txResp.transaction.message;
-        const accountKeys = msg.getAccountKeys();
-        const staticKeys = accountKeys.staticAccountKeys;
+        const staticKeys: PublicKey[] = 'staticAccountKeys' in msg && Array.isArray(msg.staticAccountKeys)
+          ? (msg.staticAccountKeys as PublicKey[])
+          : 'accountKeys' in msg && Array.isArray(msg.accountKeys)
+            ? (msg.accountKeys as PublicKey[])
+            : [];
 
         // Quick filter: does this tx reference either program?
         const hasCore = staticKeys.some((k) => k.equals(corePk));
@@ -116,12 +121,30 @@ async function backfillTransactions(
           let parsed: Uint8Array;
           if (data instanceof Uint8Array || Buffer.isBuffer(data)) {
             parsed = new Uint8Array(data);
+          } else if (typeof data === 'string') {
+            parsed = bs58.decode(data);
           } else {
             continue;
           }
 
           if (parsed.length < 1) continue;
           if (parsed[0] !== 8) continue; // SettleBatch discriminator
+
+          // The batch account supplies both the persisted batch ID and the
+          // format discriminator. DFBA results reuse the old results account
+          // address slot but move num_fills to the 34-byte header.
+          const batchIdx = ix.accountKeyIndexes[0];
+          const batchPk = batchIdx === undefined ? undefined : staticKeys[batchIdx];
+          let batchId = 0n;
+          let isDfba = false;
+          if (batchPk) {
+            const batchInfo = await connection.getAccountInfo(batchPk, 'confirmed');
+            if (batchInfo) {
+              const batch = sdk.state.decodeBatch(new Uint8Array(batchInfo.data));
+              batchId = batch.batchId;
+              isDfba = batch.markValid || batch.matchedBidQty > 0n || batch.matchedAskQty > 0n;
+            }
+          }
 
           // Results account is at account index 3 (entrypoint L562)
           const resultsIdx = ix.accountKeyIndexes[3];
@@ -134,14 +157,11 @@ async function backfillTransactions(
             const accInfo = await connection.getAccountInfo(resultsPk, 'confirmed');
             if (!accInfo) continue;
 
-            const fills = decodeFills(
-              new Uint8Array(accInfo.data),
-              slot,
-              0n, // batchId — stored on batch account, not in inst data; post-MVP refinement
-              0,  // instrumentId (SOL-USD only in v1)
-              txResp.transaction.signatures[0] ?? `unknown-${slot}`,
-              0,  // takerSide — not available from results account alone
-            );
+            const signature = txResp.transaction.signatures[0] ?? `unknown-${slot}`;
+            const resultsData = new Uint8Array(accInfo.data);
+            const fills = isDfba
+              ? decodeDfbaFills(resultsData, slot, batchId, 0, signature)
+              : decodeFills(resultsData, slot, batchId, 0, signature, 0);
 
             for (const fill of fills) {
               store.insertFill.run([
@@ -182,21 +202,95 @@ async function backfillTransactions(
 
 // ── slot discovery ═════════════════════════════════════════════════
 
+/** Return unique, ascending signature slots in the requested window. */
+export function recentSignatureSlots(
+  entries: ReadonlyArray<{ slot: number | null | undefined }>,
+  startSlot: number,
+): number[] {
+  return [...new Set(
+    entries.flatMap(({ slot }) =>
+      slot !== null && slot !== undefined && slot >= startSlot ? [slot] : [],
+    ),
+  )].sort((a, b) => a - b);
+}
+
+/** Build inclusive RPC ranges without exceeding the provider's range cap. */
+export function splitSlotRanges(
+  startSlot: number,
+  endSlot: number,
+  maxRange: number,
+): Array<[number, number]> {
+  if (startSlot > endSlot) return [];
+  const width = Math.max(1, Math.floor(maxRange));
+  const ranges: Array<[number, number]> = [];
+  for (let start = startSlot; start <= endSlot; start += width) {
+    ranges.push([start, Math.min(start + width - 1, endSlot)]);
+  }
+  return ranges;
+}
+
 /**
  * Query the RPC for confirmed slots in the last `slotCount` slots.
  * Returns the list of slot numbers that have confirmed blocks.
  */
-async function discoverSlots(
+export async function discoverSlots(
   connection: Connection,
   slotCount: number,
+  programAddresses: PublicKey[] = [],
 ): Promise<number[]> {
   const currentSlot = await connection.getSlot('confirmed');
   const startSlot = Math.max(currentSlot - slotCount, 0);
-  const MAX_RANGE = 5_000; // Solana getBlocks range cap
+
+  // Signature history is one request per program and avoids provider-specific
+  // getBlocks range caps. A block scan remains as a compatibility fallback for
+  // RPCs that do not expose signature history.
+  if (programAddresses.length > 0) {
+    const signatures: Array<{ slot: number | null | undefined }> = [];
+    for (const address of programAddresses) {
+      try {
+        const found = await connection.getSignaturesForAddress(
+          address,
+          { limit: 1_000 },
+          'confirmed',
+        );
+        signatures.push(...found);
+        if (process.env.DEBUG_BACKFILL) {
+          console.log(JSON.stringify({
+            event: 'backfill_signature_history',
+            address: address.toBase58(),
+            count: found.length,
+          }));
+        }
+      } catch (error) {
+        if (process.env.DEBUG_BACKFILL) {
+          console.log(JSON.stringify({
+            event: 'backfill_signature_history_error',
+            address: address.toBase58(),
+            name: error instanceof Error ? error.name : 'unknown',
+          }));
+        }
+        // Try the block fallback below when signature history is unavailable.
+      }
+    }
+    const signatureSlots = recentSignatureSlots(signatures, startSlot);
+    if (process.env.DEBUG_BACKFILL) {
+      console.log(JSON.stringify({
+        event: 'backfill_signature_slots',
+        currentSlot,
+        startSlot,
+        count: signatureSlots.length,
+      }));
+    }
+    if (signatureSlots.length > 0) return signatureSlots;
+  }
+
+  // The selected working-devnet provider currently caps getBlocks ranges at
+  // five slots. Keep this conservative across fallback RPCs; it costs more
+  // requests but prevents a silent zero-slot backfill on that endpoint.
+  const MAX_RANGE = 5;
 
   const slots: number[] = [];
-  for (let s = startSlot; s <= currentSlot; s += MAX_RANGE) {
-    const end = Math.min(s + MAX_RANGE - 1, currentSlot);
+  for (const [s, end] of splitSlotRanges(startSlot, currentSlot, MAX_RANGE)) {
     try {
       const batch = await connection.getBlocks(s, end, 'confirmed');
       slots.push(...batch);
@@ -223,7 +317,7 @@ export async function backfillOnBoot(
 ): Promise<BackfillResult> {
   const batchesInserted = await backfillBatchEvents(connection, store, corePk);
 
-  const slots = await discoverSlots(connection, slotCount);
+  const slots = await discoverSlots(connection, slotCount, [corePk, matcherPk]);
 
   const { txsMatched, fillsInserted } = await backfillTransactions(
     connection,

@@ -1,4 +1,9 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import type { NextConfig } from "next";
+
+const frontendRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 /**
  * mgk frontend — security headers.
@@ -91,8 +96,28 @@ function buildCsp(isProd: boolean): string {
 const isProd = process.env.NODE_ENV === "production";
 
 const nextConfig: NextConfig = {
+  // Worktrees sit under the primary checkout. Next 16 otherwise infers
+  // turbopack.root from the parent repo lockfile and cannot compile @mgk/sdk.
+  // pnpm does not hoist @mgk/sdk to mgk-frontend/node_modules, so alias +
+  // transpile it; do not leave it as a Node external.
+  transpilePackages: ["@mgk/sdk"],
+  serverExternalPackages: [],
+  turbopack: {
+    root: frontendRoot,
+    resolveAlias: {
+      // Relative to turbopack.root (mgk-frontend). Absolute paths become
+      // invalid `./Users/...` server-relative imports.
+      "@mgk/sdk": "./packages/sdk/dist/index.js",
+    },
+  },
+
   // Hard-disable powered-by header (don't leak framework info to attackers).
   poweredByHeader: false,
+
+  // Playwright MCP reaches the local app through the loopback IP. Next.js
+  // blocks cross-origin dev assets by default, which leaves server-rendered
+  // controls visible but prevents React hydration (wallet/chart clicks inert).
+  allowedDevOrigins: ["127.0.0.1"],
 
   async headers() {
     const csp = buildCsp(isProd);

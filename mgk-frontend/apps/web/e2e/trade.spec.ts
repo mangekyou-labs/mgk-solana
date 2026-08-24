@@ -1,5 +1,31 @@
 import { test, expect } from '@playwright/test';
 
+test.describe('Browser origin hydration', () => {
+  for (const origin of ['http://127.0.0.1:3000', 'http://localhost:3000'] as const) {
+    test(`opens the wallet selector from ${origin}`, async ({ page }) => {
+      await page.goto(`${origin}/trade`);
+
+      await page.getByRole('button', { name: 'Select Wallet' }).click();
+
+      await expect(
+        page.getByRole('heading', { name: /connect a wallet on solana/i }),
+      ).toBeVisible({ timeout: 3_000 });
+    });
+
+    test(`hydrates chart controls from ${origin}`, async ({ page }) => {
+      await page.goto(`${origin}/trade`);
+
+      await page.locator('[data-testid="tf-15m"]').click();
+
+      await expect(page.locator('[data-testid="tf-15m"]')).toHaveAttribute(
+        'data-active',
+        'true',
+        { timeout: 3_000 },
+      );
+    });
+  }
+});
+
 test.describe('Trade page — layout smoke', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/trade');
@@ -287,6 +313,26 @@ test.describe('Order form — UI', () => {
     await expect(checkbox).not.toBeChecked();
   });
 
+  test('DFBA post-as-maker checkbox toggles', async ({ page }) => {
+    // DFBA dual-auction role flag (is_maker) on PostOrder
+    const maker = page.getByRole('checkbox', { name: /post as maker/i });
+    await expect(maker).toBeVisible();
+    await expect(maker).not.toBeChecked();
+    await maker.check();
+    await expect(maker).toBeChecked();
+    await maker.uncheck();
+    await expect(maker).not.toBeChecked();
+  });
+
+  test('price and size inputs accept typed values', async ({ page }) => {
+    const price = page.locator('[data-testid="order-form-price-input"]');
+    const qty = page.locator('[data-testid="order-form-qty-input"]');
+    await price.fill('100.50');
+    await qty.fill('2.5');
+    await expect(price).toHaveValue('100.50');
+    await expect(qty).toHaveValue('2.5');
+  });
+
   test('buy button is disabled when wallet is not connected', async ({ page }) => {
     const buyBtn = page.locator('[data-testid="order-form-submit-buy"]');
     // No wallet connected — buy should be the active side (default) but not submit a tx
@@ -297,31 +343,37 @@ test.describe('Order form — UI', () => {
     const sellBtn = page.locator('[data-testid="order-form-submit-sell"]');
     await expect(sellBtn).toBeVisible();
   });
+
+  test('order form section is present (account CTA needs connected wallet)', async ({ page }) => {
+    // AccountActions only mounts when wallet is connected (browser auto-connect
+    // varies). Layout smoke is the order form section + submit buttons.
+    await expect(page.locator('[data-testid="orderform-section"]')).toBeVisible();
+    await expect(page.locator('[data-testid="order-form-submit-buy"]')).toBeVisible();
+  });
 });
 
-test.describe('Order form — dev-mode status affordance', () => {
-  test('?set=slashed renders slashed banner', async ({ page }) => {
-    await page.goto('/trade?set=slashed');
-    const banner = page.locator('[data-testid="order-form-slashed-banner"]');
-    await expect(banner).toBeVisible();
-    await expect(page.locator('[data-testid="order-form-slashed-title"]')).toContainText('Order slashed');
-    await expect(page.locator('[data-testid="order-form-slashed-dismiss"]')).toBeVisible();
+test.describe('Order form — no legacy commit-reveal journey', () => {
+  test('legacy query params do not open a slashed or reveal journey', async ({
+    page,
+  }) => {
+    for (const set of ['slashed', 'committing', 'awaiting_reveal', 'revealing']) {
+      await page.goto(`/trade?set=${set}`);
+      await expect(page.locator('[data-testid="orderform-section"]')).toBeVisible();
+      await expect(
+        page.locator('[data-testid="order-form-slashed-banner"]'),
+      ).toHaveCount(0);
+      await expect(page.getByText(/order slashed/i)).toHaveCount(0);
+      await expect(page.getByText(/awaiting reveal/i)).toHaveCount(0);
+      await expect(page.locator('[data-testid="order-form-submit-buy"]')).toBeVisible();
+    }
   });
 
-  test('slashed banner dismiss clears the status', async ({ page }) => {
-    await page.goto('/trade?set=slashed');
-    const banner = page.locator('[data-testid="order-form-slashed-banner"]');
-    await expect(banner).toBeVisible();
-
-    await page.locator('[data-testid="order-form-slashed-dismiss"]').click();
-    await expect(banner).not.toBeVisible();
-  });
-
-  test('?set=failed renders failed state without banner', async ({ page }) => {
+  test('?set=failed keeps the PostOrder form usable', async ({ page }) => {
     await page.goto('/trade?set=failed');
-    // Failed state should not show the slashed banner
-    await expect(page.locator('[data-testid="order-form-slashed-banner"]')).not.toBeVisible();
+    await expect(
+      page.locator('[data-testid="order-form-slashed-banner"]'),
+    ).toHaveCount(0);
+    await expect(page.locator('[data-testid="order-form-submit-buy"]')).toBeVisible();
   });
 });
-
 

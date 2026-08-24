@@ -82,12 +82,69 @@ describe('indexer integration', () => {
 
   // ── healthz ═════════════════════════════════════════════════════
 
-  it('GET /api/healthz returns ok', async () => {
+  it('GET /api/healthz returns ok and health status structure', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/healthz' });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.ok).toBe(true);
     expect(typeof body.ts).toBe('number');
+    expect(body).toHaveProperty('status');
+    expect(body).toHaveProperty('sqliteWritable');
+    expect(body).toHaveProperty('processedThroughSlot');
+    expect(body).toHaveProperty('latestIndexedSlot');
+    expect(body).toHaveProperty('rpcSlot');
+    expect(body).toHaveProperty('rpcReachable');
+    expect(body).toHaveProperty('slotLag');
+    expect(body).toHaveProperty('lastSuccessfulSyncAt');
+    expect(body).toHaveProperty('lastSyncErrorAt');
+    expect(body).toHaveProperty('subscriptions');
+  });
+
+  it('GET /api/healthz reports sqlite, slot lag, and last batch transition', async () => {
+    const healthStore = createStore(':memory:');
+    healthStore.insertFill.run([
+      150, 2, 0, 0, 88_000_000, 10_000, TAKER, MAKER, TX_SIG, 0,
+    ]);
+    healthStore.insertBatchEvent.run([2, 1_700_000_180, 3, 0, 123_500, 0]);
+    healthStore.setSyncCursor(150);
+
+    const liveApp = Fastify({ logger: false });
+    await liveApp.register(healthRoutes, {
+      store: healthStore,
+      getRuntimeHealth: () => ({
+        rpcSlot: 200,
+        rpcReachable: true,
+        processedThroughSlot: 150,
+        lastSuccessfulSyncAt: Date.now(),
+        lastSyncErrorAt: null,
+        lastHeartbeat: Date.now(),
+        subscriptions: { core: true, matcher: false },
+        lastBatch: { batchId: 2, phase: 3, ts: 1_700_000_180 },
+        inFlight: false,
+      }),
+    });
+    await liveApp.ready();
+
+    const res = await liveApp.inject({ method: 'GET', url: '/api/healthz' });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(true);
+    expect(body.sqliteWritable).toBe(true);
+    expect(body.latestIndexedSlot).toBe(150);
+    expect(body.rpcSlot).toBe(200);
+    expect(body.slotLag).toBe(50);
+    expect(body.subscriptions).toEqual({ core: true, matcher: false });
+    expect(body.lastBatch).toMatchObject({
+      batchId: 2,
+      phase: 3,
+      ts: 1_700_000_180,
+    });
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain('http');
+    expect(serialized).not.toContain('keypair');
+    expect(serialized).not.toContain('secret');
+    await liveApp.close();
+    healthStore.close();
   });
 
   // ── batch events ════════════════════════════════════════════════
@@ -152,7 +209,70 @@ describe('indexer integration', () => {
     }
   });
 
+  it('GET /api/batch/current invalidates the live cache when the keeper advances the batch address', async () => {
+    const liveStore = createStore(':memory:');
+    const liveApp = Fastify({ logger: false });
+    const coreProgramId = Keypair.generate().publicKey;
+    const registryAddress = Keypair.generate().publicKey;
+    const firstBatchAddress = Keypair.generate().publicKey;
+    const nextBatchAddress = Keypair.generate().publicKey;
+    let batchIdCounter = 5n;
+    let currentBatchAddress = firstBatchAddress;
+
+    const connection = {
+      async getAccountInfo(address: PublicKey) {
+        if (address.equals(registryAddress)) return makeAccountInfo(makeRegistryBuffer(batchIdCounter));
+        if (address.equals(firstBatchAddress)) return makeAccountInfo(makeBatchBuffer(4n));
+        if (address.equals(nextBatchAddress)) return makeAccountInfo(makeBatchBuffer(5n));
+        return null;
+      },
+      async getProgramAccounts() {
+        return [];
+      },
+    } as unknown as Connection;
+
+    await liveApp.register(async (instance) => {
+      await batchRoutes(instance, liveStore, {
+        connection,
+        coreProgramId: coreProgramId.toBase58(),
+        registryAddress: registryAddress.toBase58(),
+        getCurrentBatchAddress: () => currentBatchAddress.toBase58(),
+      });
+    });
+    await liveApp.ready();
+
+    try {
+      const first = await liveApp.inject({ method: 'GET', url: '/api/batch/current' });
+      expect(JSON.parse(first.body).batchId).toBe('4');
+
+      batchIdCounter = 6n;
+      currentBatchAddress = nextBatchAddress;
+      const next = await liveApp.inject({ method: 'GET', url: '/api/batch/current' });
+      expect(JSON.parse(next.body)).toMatchObject({
+        batchId: '5',
+        batchAddress: nextBatchAddress.toBase58(),
+        batch_id_counter: '6',
+      });
+    } finally {
+      await liveApp.close();
+      liveStore.close();
+    }
+  });
+
   // ── markets ══════════════════════════════════════════════════════
+
+  it('GET /api/markets/0/state returns a zero baseline before the first fill', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/markets/0/state' });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      instrument_id: 0,
+      last_price: 0,
+      mark_price: 0,
+      open_interest_long: 0,
+      open_interest_short: 0,
+      volume_24h: 0,
+    });
+  });
 
   it('GET /api/markets returns market state', async () => {
     store.upsertMarketState.run([0, 150.42, 150.38, 5000, 3200, 0.0125, 0, 1700000000]);

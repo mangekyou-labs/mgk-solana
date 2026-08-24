@@ -294,8 +294,9 @@ pub fn remove_at_offset(state: &mut BookState, offset: u32) -> Result<RestingOrd
     let remaining = removed.qty.saturating_sub(removed.filled_qty);
     match side {
         Side::Buy => {
-            state.book.bids[level_idx].total_qty =
-                state.book.bids[level_idx].total_qty.saturating_sub(remaining);
+            state.book.bids[level_idx].total_qty = state.book.bids[level_idx]
+                .total_qty
+                .saturating_sub(remaining);
             if state.book.bids[level_idx].order_count > 0 {
                 state.book.bids[level_idx].order_count -= 1;
             }
@@ -310,8 +311,9 @@ pub fn remove_at_offset(state: &mut BookState, offset: u32) -> Result<RestingOrd
             }
         }
         Side::Sell => {
-            state.book.asks[level_idx].total_qty =
-                state.book.asks[level_idx].total_qty.saturating_sub(remaining);
+            state.book.asks[level_idx].total_qty = state.book.asks[level_idx]
+                .total_qty
+                .saturating_sub(remaining);
             if state.book.asks[level_idx].order_count > 0 {
                 state.book.asks[level_idx].order_count -= 1;
             }
@@ -515,13 +517,13 @@ impl From<BookError> for ProgramError {
             // Map to slab errors 200-299 from mgk-common, then offset
             // for matcher-specific codes. Reuse generic ProgramError codes
             // for conditions that don't need a domain-specific tag.
-            BookError::Full => 200 + 12,           // PoolFull
-            BookError::ZeroQty => 200 + 11,        // InvalidQuantity
-            BookError::NotFound => 200 + 5,        // OrderNotFound
-            BookError::BufferTooSmall => 10,       // AccountDataTooSmall (generic)
-            BookError::BufferTooShort => 10,       // AccountDataTooSmall (generic)
-            BookError::BadAlignment => 11,         // InvalidAccountData (generic)
-            BookError::QtyBelowFilled => 200 + 1,  // InvalidOrder
+            BookError::Full => 200 + 12,          // PoolFull
+            BookError::ZeroQty => 200 + 11,       // InvalidQuantity
+            BookError::NotFound => 200 + 5,       // OrderNotFound
+            BookError::BufferTooSmall => 10,      // AccountDataTooSmall (generic)
+            BookError::BufferTooShort => 10,      // AccountDataTooSmall (generic)
+            BookError::BadAlignment => 11,        // InvalidAccountData (generic)
+            BookError::QtyBelowFilled => 200 + 1, // InvalidOrder
         };
         ProgramError::from(code)
     }
@@ -585,6 +587,7 @@ pub fn book_state_from_bytes_mut(buf: &mut [u8]) -> Result<&mut BookState, BookE
     if buf.len() < size {
         return Err(BookError::BufferTooShort);
     }
+    #[allow(clippy::manual_is_multiple_of)] // `is_multiple_of` not stable in SBF toolchain
     if (buf.as_ptr() as usize) % 8 != 0 {
         return Err(BookError::BadAlignment);
     }
@@ -593,9 +596,7 @@ pub fn book_state_from_bytes_mut(buf: &mut [u8]) -> Result<&mut BookState, BookE
     // - The returned &mut BookState borrows buf for the caller's lifetime,
     //   which is valid because the caller owns buf.
     // - `BookState` is `#[repr(C)]` with no interior mutability.
-    let state = unsafe {
-        &mut *(buf.as_mut_ptr() as *mut BookState)
-    };
+    let state = unsafe { &mut *(buf.as_mut_ptr() as *mut BookState) };
     Ok(state)
 }
 
@@ -618,8 +619,8 @@ pub fn deserialize_book_state(buf: &[u8]) -> Result<BookState, BookError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::queue::PartitionedOrders;
     use crate::state::order::OrderType;
+    use crate::state::queue::PartitionedOrders;
     use pinocchio::pubkey::Pubkey;
 
     fn make_order(byte: u8, side: Side, price: i64, qty: u64) -> LimitOrder {
@@ -856,7 +857,7 @@ mod tests {
             qty: 5,
             reduce_only: false,
             cancel_order_id: 0,
-        is_maker: false,
+            is_maker: false,
         };
         let mut queues2 = PartitionedOrders::new();
         let input = [buy];
@@ -900,7 +901,7 @@ mod tests {
             qty: 0,
             reduce_only: false,
             cancel_order_id: id,
-        is_maker: false,
+            is_maker: false,
         };
         let input = [cancel];
         let mut queues = PartitionedOrders::new();
@@ -935,7 +936,7 @@ mod tests {
             qty: 0,
             reduce_only: false,
             cancel_order_id: 0,
-        is_maker: false,
+            is_maker: false,
         };
         let input = [cancel_all];
         let mut queues = PartitionedOrders::new();
@@ -966,7 +967,7 @@ mod tests {
         assert_eq!(removed.order_id, id_a);
         assert_eq!(removed.qty, 5);
         assert_eq!(state.resting_count, 2); // slot remains; cleared in place
-        // Chain now points at id_b's slot.
+                                            // Chain now points at id_b's slot.
         assert_eq!(state.book.bids[0].first_order_offset, 1);
         assert_eq!(state.book.bids[0].order_count, 1);
     }
@@ -996,8 +997,7 @@ mod tests {
         let id = place_resting(&mut state, &make_order(1, Side::Buy, 100, 10)).unwrap();
         assert_eq!(state.book.bids[0].total_qty, 10);
 
-        let updated =
-            modify_resting_qty(&mut state, id, &user_pubkey(1), 4).unwrap();
+        let updated = modify_resting_qty(&mut state, id, &user_pubkey(1), 4).unwrap();
         assert_eq!(updated.qty, 4);
         assert_eq!(state.resting[0].qty, 4);
         // Level total adjusted by -6.
@@ -1008,8 +1008,7 @@ mod tests {
     fn test_modify_resting_qty_increase_updates_level_total() {
         let mut state = BookState::new();
         let id = place_resting(&mut state, &make_order(1, Side::Buy, 100, 5)).unwrap();
-        let updated =
-            modify_resting_qty(&mut state, id, &user_pubkey(1), 12).unwrap();
+        let updated = modify_resting_qty(&mut state, id, &user_pubkey(1), 12).unwrap();
         assert_eq!(updated.qty, 12);
         assert_eq!(state.book.bids[0].total_qty, 12);
     }
@@ -1044,10 +1043,8 @@ mod tests {
     fn test_modify_resting_qty_preserves_level_when_total_unchanged() {
         let mut state = BookState::new();
         let id = place_resting(&mut state, &make_order(1, Side::Buy, 100, 5)).unwrap();
-        let updated =
-            modify_resting_qty(&mut state, id, &user_pubkey(1), 5).unwrap();
+        let updated = modify_resting_qty(&mut state, id, &user_pubkey(1), 5).unwrap();
         assert_eq!(updated.qty, 5);
         assert_eq!(state.book.bids[0].total_qty, 5);
     }
 }
-

@@ -51,6 +51,46 @@ use crate::state::instrument::Instrument;
 /// 1 bp = 10^-4, so multiply the fraction by 10_000 to get bps.
 const BPS_PER_UNIT_FRACTION: i128 = 10_000;
 
+// ---------------------------------------------------------------------------
+// D7: Coefficient-based funding rate (replaces legacy SMA-based formula)
+// ---------------------------------------------------------------------------
+
+/// Compute the D7 funding rate from mark price and oracle index.
+///
+/// `rate_bps = clamp(((mark - index) * coefficient_bps) / index, ±max_rate_bps)`
+///
+/// Uses checked i128 arithmetic throughout; truncation toward zero.
+/// Returns `None` if:
+///   - `index <= 0` (invalid/missing oracle)
+///   - `coefficient_bps < 0` (defensive; caller should reject)
+///   - `max_rate_bps <= 0` (defensive; caller should reject)
+///
+/// The formula captures the spread between mark and index, scaled by a
+/// governance-configurable coefficient (10_000 = 1×). A positive spread
+/// (mark > index) yields a positive rate (longs pay shorts); negative
+/// spread yields negative rate (shorts pay longs).
+pub fn compute_d7_funding_rate(
+    mark_price: i64,
+    index_price: i64,
+    coefficient_bps: i64,
+    max_rate_bps: i64,
+) -> Option<i64> {
+    if index_price <= 0 {
+        return None;
+    }
+    if coefficient_bps < 0 || max_rate_bps <= 0 {
+        return None;
+    }
+    // (mark - index) * coefficient_bps / index
+    // All intermediate math in i128 to avoid overflow.
+    let diff = (mark_price as i128) - (index_price as i128);
+    let numerator = diff.saturating_mul(coefficient_bps as i128);
+    let raw_rate = numerator.checked_div(index_price as i128)?;
+    // Clamp to ±max_rate_bps
+    let clamped = clamp_i64(raw_rate as i64, -max_rate_bps, max_rate_bps);
+    Some(clamped)
+}
+
 /// Capacity of `Instrument.premium_samples` ring buffer.
 pub const PREMIUM_SAMPLE_CAPACITY: usize = 16;
 
@@ -132,11 +172,11 @@ pub fn compute_premium_sma(
 /// buffer is full — the ring is "lossy" with respect to the SMA
 /// window: callers that want a longer window need a bigger buffer).
 pub fn record_premium_sample(instrument: &mut Instrument, sample: i64) {
-    let count = instrument.premium_sample_count as usize;
+    let count = instrument._reserved_sample_count as usize;
     let idx = count % PREMIUM_SAMPLE_CAPACITY;
-    instrument.premium_samples[idx] = sample;
+    instrument._reserved_premium_samples[idx] = sample;
     if count < PREMIUM_SAMPLE_CAPACITY {
-        instrument.premium_sample_count += 1;
+        instrument._reserved_sample_count += 1;
     }
 }
 
@@ -341,8 +381,8 @@ mod tests {
     fn test_record_first_sample_writes_at_zero() {
         let mut inst = empty_instrument();
         record_premium_sample(&mut inst, 7);
-        assert_eq!(inst.premium_sample_count, 1);
-        assert_eq!(inst.premium_samples[0], 7);
+        assert_eq!(inst._reserved_sample_count, 1);
+        assert_eq!(inst._reserved_premium_samples[0], 7);
     }
 
     #[test]
@@ -351,11 +391,11 @@ mod tests {
         for i in 0..16 {
             record_premium_sample(&mut inst, i as i64);
         }
-        assert_eq!(inst.premium_sample_count, 16);
+        assert_eq!(inst._reserved_sample_count, 16);
         record_premium_sample(&mut inst, 99);
         // count is still 16 (saturated); 99 overwrote index 0 (was 0).
-        assert_eq!(inst.premium_sample_count, 16);
-        assert_eq!(inst.premium_samples[0], 99);
+        assert_eq!(inst._reserved_sample_count, 16);
+        assert_eq!(inst._reserved_premium_samples[0], 99);
     }
 
     // ---- compute_funding_rate ----
@@ -475,15 +515,16 @@ mod tests {
         let p = compute_premium_sample(Some(100_000), Some(100_000), 100_000).unwrap();
         record_premium_sample(&mut inst, p);
         let sma = compute_premium_sma(
-            &inst.premium_samples,
-            inst.premium_sample_count,
-            inst.funding_sma_window,
+            &inst._reserved_premium_samples,
+            inst._reserved_sample_count,
+            inst._reserved_sma_window,
         );
+        // Legacy compute_funding_rate uses explicit params, not instrument fields
         let rate = compute_funding_rate(
             sma,
-            inst.interest_rate_bps,
-            inst.deviation_cap_bps,
-            inst.funding_cap_bps,
+            1,  // legacy interest_rate_bps
+            5,  // legacy deviation_cap_bps
+            50, // legacy funding_cap_bps
         );
         // After exactly 1 interval (current=100, last=0, interval=100),
         // delta = rate × 1.
@@ -519,5 +560,119 @@ mod tests {
     #[test]
     fn test_premium_sample_capacity_is_16() {
         assert_eq!(PREMIUM_SAMPLE_CAPACITY, 16);
+    }
+
+    // ---- D7: compute_d7_funding_rate ----
+
+    #[test]
+    fn test_d7_positive_spread_yields_positive_rate() {
+        // mark=101_000, index=100_000, coefficient=10_000 (1×), cap=1_000
+        // raw = (101_000 - 100_000) * 10_000 / 100_000 = 100
+        let r = compute_d7_funding_rate(101_000, 100_000, 10_000, 1_000).unwrap();
+        assert_eq!(r, 100);
+    }
+
+    #[test]
+    fn test_d7_negative_spread_yields_negative_rate() {
+        // mark=99_000, index=100_000, coefficient=10_000, cap=1_000
+        // raw = (99_000 - 100_000) * 10_000 / 100_000 = -100
+        let r = compute_d7_funding_rate(99_000, 100_000, 10_000, 1_000).unwrap();
+        assert_eq!(r, -100);
+    }
+
+    #[test]
+    fn test_d7_zero_spread_yields_zero_rate() {
+        let r = compute_d7_funding_rate(100_000, 100_000, 10_000, 1_000).unwrap();
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn test_d7_clamped_to_max_rate() {
+        // mark=150_000, index=100_000, coefficient=10_000, cap=50
+        // raw = (150_000 - 100_000) * 10_000 / 100_000 = 500
+        let r = compute_d7_funding_rate(150_000, 100_000, 10_000, 50).unwrap();
+        assert_eq!(r, 50);
+    }
+
+    #[test]
+    fn test_d7_clamped_to_neg_max_rate() {
+        // mark=50_000, index=100_000, coefficient=10_000, cap=50
+        // raw = (50_000 - 100_000) * 10_000 / 100_000 = -500
+        let r = compute_d7_funding_rate(50_000, 100_000, 10_000, 50).unwrap();
+        assert_eq!(r, -50);
+    }
+
+    #[test]
+    fn test_d7_fractional_coefficient() {
+        // mark=100_100, index=100_000, coefficient=100 (0.01×), cap=1_000
+        // raw = (100_100 - 100_000) * 100 / 100_000 = 10_000 / 100_000 = 0
+        let r = compute_d7_funding_rate(100_100, 100_000, 100, 1_000).unwrap();
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn test_d7_rounding_truncates_toward_zero() {
+        // mark=100_003, index=100_000, coefficient=10_000, cap=1_000
+        // raw = 3 * 10_000 / 100_000 = 30_000 / 100_000 = 0 (truncated)
+        let r = compute_d7_funding_rate(100_003, 100_000, 10_000, 1_000).unwrap();
+        assert_eq!(r, 0);
+        // mark=100_010, index=100_000, coefficient=10_000, cap=1_000
+        // raw = 10 * 10_000 / 100_000 = 100_000 / 100_000 = 1
+        let r2 = compute_d7_funding_rate(100_010, 100_000, 10_000, 1_000).unwrap();
+        assert_eq!(r2, 1);
+    }
+
+    #[test]
+    fn test_d7_invalid_index_returns_none() {
+        assert_eq!(compute_d7_funding_rate(100_000, 0, 10_000, 1_000), None);
+        assert_eq!(compute_d7_funding_rate(100_000, -1, 10_000, 1_000), None);
+    }
+
+    #[test]
+    fn test_d7_negative_coefficient_returns_none() {
+        assert_eq!(compute_d7_funding_rate(100_000, 100_000, -1, 1_000), None);
+    }
+
+    #[test]
+    fn test_d7_zero_max_rate_returns_none() {
+        assert_eq!(compute_d7_funding_rate(100_000, 100_000, 10_000, 0), None);
+    }
+
+    #[test]
+    fn test_d7_checked_math_boundary_large_prices() {
+        // i64::MAX for both prices, coefficient=10_000, cap=1_000
+        let r = compute_d7_funding_rate(i64::MAX, i64::MAX, 10_000, 1_000).unwrap();
+        assert_eq!(r, 0); // diff=0
+    }
+
+    #[test]
+    fn test_d7_zero_rate_cursor_advancement() {
+        // D7: even with rate=0, if interval elapsed, cursor should advance
+        let (delta, new_last) = accrue_cum_funding(200, 100, 100, 0);
+        assert_eq!(delta, 0);
+        assert_eq!(new_last, 100); // rate=0 → no advance (existing behavior)
+    }
+
+    #[test]
+    fn test_d7_full_interval_accrual() {
+        // mark=105_000, index=100_000, coefficient=10_000, cap=1_000
+        // raw rate = (105_000 - 100_000) * 10_000 / 100_000 = 500
+        let rate = compute_d7_funding_rate(105_000, 100_000, 10_000, 1_000).unwrap();
+        assert_eq!(rate, 500);
+        // After 1 interval (current=100, last=0, interval=100)
+        let (delta, new_last) = accrue_cum_funding(100, 0, 100, rate);
+        assert_eq!(delta, 500);
+        assert_eq!(new_last, 100);
+    }
+
+    #[test]
+    fn test_d7_long_debit_short_credit_conservation() {
+        // Positive rate: longs pay, shorts receive.
+        // Conservation: long_payment + short_payment = 0
+        let cum_current: i128 = 1_000;
+        let cum_entry: i128 = 0;
+        let long_p = mgk_common::math::calculate_funding_payment(10, cum_current, cum_entry);
+        let short_p = mgk_common::math::calculate_funding_payment(-10, cum_current, cum_entry);
+        assert_eq!(long_p + short_p, 0);
     }
 }

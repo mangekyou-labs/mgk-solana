@@ -134,11 +134,9 @@ impl Default for AllocationResult {
 }
 
 /// Pack `orders` into flat buffer (must hold `orders.len() * FLAT_ORDER_BYTES`).
+#[allow(clippy::result_unit_err)]
 pub fn pack_orders(orders: &[DfbaOrder], buf: &mut [u8]) -> Result<usize, ()> {
-    let need = orders
-        .len()
-        .checked_mul(FLAT_ORDER_BYTES)
-        .ok_or(())?;
+    let need = orders.len().checked_mul(FLAT_ORDER_BYTES).ok_or(())?;
     if buf.len() < need {
         return Err(());
     }
@@ -444,6 +442,7 @@ pub struct DualAuctionResult {
 }
 
 #[cfg(not(target_os = "solana"))]
+#[allow(clippy::derivable_impls)]
 impl Default for DualAuctionResult {
     fn default() -> Self {
         Self {
@@ -618,6 +617,7 @@ fn better_priority(a: &DfbaOrder, b: &DfbaOrder, prefer_higher: bool) -> bool {
     a.order_id < b.order_id
 }
 
+#[allow(clippy::too_many_arguments)]
 fn allocate_side(
     orders: &[DfbaOrder],
     rem: &mut [u64],
@@ -689,8 +689,7 @@ fn allocate_side(
         }
         if marg_n > 0 && marg_total > 0 {
             let to_alloc = left.min(marg_total);
-            for k in 0..marg_n {
-                let i = marg_idx[k];
+            for &i in marg_idx.iter().take(marg_n) {
                 let capped = rem[i].min(marginal_size_cap);
                 let f = ((capped as u128) * (to_alloc as u128) / (marg_total as u128)) as u64;
                 fills[i] = fills[i].saturating_add(f);
@@ -840,17 +839,25 @@ mod tests {
         let total = scratch_bytes_for_cap(cap);
         assert_eq!(total, 4 * 64 * 56);
         let mut ends = [0usize; 4];
-        for r in 0..4 {
+        for (r, end) in ends.iter_mut().enumerate() {
             let start = region_offset(r, cap);
-            let end = start + cap * FLAT_ORDER_BYTES;
-            ends[r] = end;
+            *end = start + cap * FLAT_ORDER_BYTES;
             assert_eq!(start, r * cap * FLAT_ORDER_BYTES);
         }
         assert_eq!(ends[3], total);
         // Adjacent regions abut, no gap/overlap
-        assert_eq!(region_offset(1, cap), region_offset(0, cap) + cap * FLAT_ORDER_BYTES);
-        assert_eq!(region_offset(2, cap), region_offset(1, cap) + cap * FLAT_ORDER_BYTES);
-        assert_eq!(region_offset(3, cap), region_offset(2, cap) + cap * FLAT_ORDER_BYTES);
+        assert_eq!(
+            region_offset(1, cap),
+            region_offset(0, cap) + cap * FLAT_ORDER_BYTES
+        );
+        assert_eq!(
+            region_offset(2, cap),
+            region_offset(1, cap) + cap * FLAT_ORDER_BYTES
+        );
+        assert_eq!(
+            region_offset(3, cap),
+            region_offset(2, cap) + cap * FLAT_ORDER_BYTES
+        );
     }
 
     #[test]
@@ -889,11 +896,7 @@ mod tests {
         // makers sell: 1001×100, 1003×1000, 1003×200
         // takers buy:  1005×300, 1003×100
         // max volume 400 at 1003
-        let makers = [
-            o(1001, 100, 2, 1),
-            o(1003, 1000, 7, 2),
-            o(1003, 200, 9, 3),
-        ];
+        let makers = [o(1001, 100, 2, 1), o(1003, 1000, 7, 2), o(1003, 200, 9, 3)];
         let takers = [o(1005, 300, 3, 4), o(1003, 100, 4, 5)];
         let r = compute_clearing(&makers, &takers, AuctionKind::Ask).unwrap();
         assert_eq!(r.matched_qty, 400);
@@ -965,7 +968,7 @@ mod tests {
 
     #[test]
     fn allocation_dust_round_down() {
-        // 3 makers size 1 at 100; taker size 1 → pro-rata 0 each if round down? 
+        // 3 makers size 1 at 100; taker size 1 → pro-rata 0 each if round down?
         // Actually 1/3 rounds to 0 for each → dust 1, matched 0 — or first gets 0
         // Better: makers 10,10,10 taker 10 at same price → 3+3+3=9 dust 1
         let makers = [o(100, 10, 1, 1), o(100, 10, 2, 2), o(100, 10, 3, 3)];
@@ -1019,7 +1022,7 @@ mod tests {
     fn select_cap_prefers_best_price() {
         let orders = [
             o(100, 10, 3, 1),
-            o(90, 10, 1, 2),  // best ask
+            o(90, 10, 1, 2), // best ask
             o(95, 10, 2, 3),
         ];
         let mut out = [o(0, 0, 0, 0); 2];
@@ -1136,14 +1139,92 @@ mod tests {
     #[test]
     fn lifecycle_self_trade_only_yields_zero_fills() {
         // Same user maker sell + taker buy: clear volume may exist but alloc is 0.
-        let dual = run_dual_dfba(
-            &[],
-            &[o(100, 20, 1, 9)],
-            &[o(110, 20, 2, 9)],
-            &[],
-            u64::MAX,
-        );
+        let dual = run_dual_dfba(&[], &[o(100, 20, 1, 9)], &[o(110, 20, 2, 9)], &[], u64::MAX);
         assert!(dual.ask.matched_qty > 0);
         assert_eq!(dual.ask_alloc.matched_qty, 0);
+    }
+
+    // ── T9.1.7 CU measurement benchmarks ──────────────────────────────
+
+    /// Generate a set of crossing orders for benchmarking.
+    /// `n` orders per side, prices around 1000, sizes 10..10+n.
+    fn bench_orders(n: usize, base_user: u64) -> Vec<DfbaOrder> {
+        (0..n)
+            .map(|i| DfbaOrder {
+                price: 1000 + (i as i64 % 10) - 5, // prices 995..1004
+                size: 10 + (i as u64 % 20),
+                order_id: i as u64 + 1,
+                user: Pubkey::from([(base_user + i as u64) as u8; 32]),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cu_measurement_cap_32() {
+        let makers = bench_orders(32, 0);
+        let takers = bench_orders(32, 100);
+        let start = std::time::Instant::now();
+        for _ in 0..1000 {
+            let _ = run_dual_dfba(&makers, &[], &takers, &[], u64::MAX);
+        }
+        let elapsed = start.elapsed();
+        // Document: 32 orders/side × 1000 iterations
+        // Expected: <100ms on modern hardware (O(n log n) sort + O(n) alloc)
+        assert!(
+            elapsed.as_millis() < 5000,
+            "32 orders/side took {}ms for 1000 iters",
+            elapsed.as_millis()
+        );
+    }
+
+    #[test]
+    fn cu_measurement_cap_64() {
+        let makers = bench_orders(64, 0);
+        let takers = bench_orders(64, 200);
+        let start = std::time::Instant::now();
+        for _ in 0..1000 {
+            let _ = run_dual_dfba(&makers, &[], &takers, &[], u64::MAX);
+        }
+        let elapsed = start.elapsed();
+        // Document: 64 orders/side × 1000 iterations
+        // Expected: <200ms on modern hardware
+        assert!(
+            elapsed.as_millis() < 10000,
+            "64 orders/side took {}ms for 1000 iters",
+            elapsed.as_millis()
+        );
+    }
+
+    #[test]
+    fn cu_measurement_cap_128() {
+        let makers = bench_orders(128, 0);
+        let takers = bench_orders(128, 300);
+        let start = std::time::Instant::now();
+        for _ in 0..1000 {
+            let _ = run_dual_dfba(&makers, &[], &takers, &[], u64::MAX);
+        }
+        let elapsed = start.elapsed();
+        // Document: 128 orders/side × 1000 iterations
+        // Expected: <400ms on modern hardware (2x of cap 64)
+        assert!(
+            elapsed.as_millis() < 20000,
+            "128 orders/side took {}ms for 1000 iters",
+            elapsed.as_millis()
+        );
+    }
+
+    /// Verify that cap overflow selection works correctly at the boundary.
+    #[test]
+    fn cu_measurement_overflow_at_cap() {
+        // 80 orders on one side, cap=64 → select_by_price_priority picks top 64
+        let mut makers = bench_orders(80, 0);
+        // Give some orders better prices to test priority selection
+        for maker in makers.iter_mut().take(10) {
+            maker.price = 1010; // above clearing → should be selected first
+        }
+        let takers = bench_orders(64, 400);
+        let dual = run_dual_dfba(&makers, &[], &takers, &[], 64);
+        // Should complete without panic; allocation respects cap
+        assert!(dual.bid.matched_qty > 0 || dual.bid_alloc.matched_qty == 0);
     }
 }

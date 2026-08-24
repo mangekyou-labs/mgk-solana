@@ -50,6 +50,7 @@ export const PercolatorError = {
   // Perps-core (600-699)
   RevealDeadlineExpired: 600,
   OperationPaused: 602,
+  ReduceOnlyViolation: 606,
 
   // Legacy range (100-199) — pre-strip router code that is still emitted
   // by the perps-core program for portfolio-level margin checks.
@@ -104,6 +105,8 @@ const HUMAN_MESSAGES: Record<PercolatorError, string> = {
     'The reveal deadline has passed. Place a new order for the next batch.',
   [PercolatorError.OperationPaused]:
     'Trading is temporarily paused. Try again in a few moments.',
+  [PercolatorError.ReduceOnlyViolation]:
+    'Reduce-only order violates position constraints. Check your position size and order direction.',
 
   // Anti-toxicity (G12)
   [PercolatorError.InvalidCommitment]:

@@ -76,7 +76,9 @@ export function TradingViewWidget({
   const widgetRef = useRef<TradingViewWidgetInstance | null>(null);
   const onChartReadyRef = useRef(onChartReady);
   const onErrorRef = useRef(onError);
+  const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [scriptError, setScriptError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
 
   // Keep the latest callback refs current across renders. Doing this in
   // an effect (rather than during render) avoids the React 19 "cannot
@@ -92,6 +94,7 @@ export function TradingViewWidget({
   // from the initial render; subsequent prop changes flow through the
   // dedicated prop effect below. Re-creating the widget on every
   // prop change would tear down user-selected indicators and drawings.
+  // `retryNonce` is the exception: a failed script load must remount.
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     let cancelled = false;
@@ -102,6 +105,7 @@ export function TradingViewWidget({
         if (!window.TradingView) {
           const msg = 'TradingView global not available after script load';
           setScriptError(msg);
+          setPhase('error');
           onErrorRef.current?.(msg);
           return;
         }
@@ -129,6 +133,7 @@ export function TradingViewWidget({
           calendar: false,
         });
         widgetRef.current = widget;
+        setPhase('ready');
 
         if (onChartReadyRef.current) {
           widget.onChartReady?.((chart) => onChartReadyRef.current?.(chart));
@@ -138,6 +143,7 @@ export function TradingViewWidget({
         if (cancelled) return;
         const message = err instanceof Error ? err.message : 'Unknown error';
         setScriptError(message);
+        setPhase('error');
         onErrorRef.current?.(message);
       });
 
@@ -153,7 +159,7 @@ export function TradingViewWidget({
       }
       widgetRef.current = null;
     };
-  }, [containerId]);
+  }, [containerId, retryNonce]);
 
   // React to symbol/interval prop changes without re-mounting the widget.
   // On initial mount, widgetRef.current is null (script is still loading),
@@ -178,12 +184,33 @@ export function TradingViewWidget({
       data-symbol={symbol}
       data-interval={interval}
     >
-      {scriptError ? (
+      {phase === 'loading' ? (
+        <div
+          data-testid="tradingview-loading"
+          className="text-text-muted font-mono text-xs p-4"
+        >
+          Loading chart…
+        </div>
+      ) : null}
+      {phase === 'error' && scriptError ? (
         <div
           data-testid="tradingview-error"
           className="text-warn font-mono text-xs p-4"
         >
-          {scriptError}
+          <div>{scriptError}</div>
+          <button
+            type="button"
+            data-testid="tradingview-retry"
+            className="mt-3 border border-border px-3 py-1 text-text"
+            onClick={() => {
+              resetTradingViewScriptLoader();
+              setScriptError(null);
+              setPhase('loading');
+              setRetryNonce((n) => n + 1);
+            }}
+          >
+            Retry
+          </button>
         </div>
       ) : null}
       <div id={`tv-${containerId}`} style={{ height: 400, width: '100%' }} />
@@ -191,7 +218,16 @@ export function TradingViewWidget({
   );
 }
 
+/** Drop a failed or in-flight tv.js load so Retry can fetch again. */
+export function resetTradingViewScriptLoader(): void {
+  tvScriptLoadingPromise = null;
+  if (typeof document === 'undefined') return;
+  document
+    .querySelectorAll('script[data-tv-script="loaded"]')
+    .forEach((el) => el.remove());
+}
+
 /** Test-only: reset the in-flight script loader. */
 export function __resetTradingViewScriptLoader(): void {
-  tvScriptLoadingPromise = null;
+  resetTradingViewScriptLoader();
 }

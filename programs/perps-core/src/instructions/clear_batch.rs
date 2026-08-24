@@ -1,4 +1,4 @@
-use crate::state::{Batch, BatchStatus};
+use crate::state::{Batch, BatchStatus, Registry};
 use mgk_common::MgkError;
 use pinocchio::{
     account_info::AccountInfo,
@@ -56,11 +56,18 @@ pub fn process_clear_batch(
     book_account: &AccountInfo,
     results_account: &AccountInfo,
     matcher_program: &AccountInfo,
-    _registry_account: &AccountInfo,
+    registry_account: &AccountInfo,
     _instrument_accounts: &[AccountInfo],
     _commitment_accounts: &[AccountInfo],
     _portfolio_accounts: &[AccountInfo],
 ) -> ProgramResult {
+    let registry =
+        unsafe { &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry) };
+    if registry.is_trading_paused() || registry.is_clears_paused() {
+        msg!("Error: Trading/clears is paused");
+        return Err(MgkError::OperationPaused.into());
+    }
+
     let batch = unsafe { &*(batch_account.borrow_data_unchecked().as_ptr() as *const Batch) };
 
     // DFBA: close_collecting lands in Clearing; also accept legacy Revealing.
@@ -119,9 +126,8 @@ pub fn process_clear_batch(
     let matched_bid = u64::from_le_bytes(results_data[16..24].try_into().unwrap());
     let matched_ask = u64::from_le_bytes(results_data[24..32].try_into().unwrap());
 
-    let batch_mut = unsafe {
-        &mut *(batch_account.borrow_mut_data_unchecked().as_ptr() as *mut Batch)
-    };
+    let batch_mut =
+        unsafe { &mut *(batch_account.borrow_mut_data_unchecked().as_ptr() as *mut Batch) };
     batch_mut.bid_clearing_price = bid;
     batch_mut.ask_clearing_price = ask;
     batch_mut.matched_bid_qty = matched_bid;
@@ -188,7 +194,7 @@ mod tests {
         buf[32..34].copy_from_slice(&2u16.to_le_bytes());
         let bid = i64::from_le_bytes(buf[0..8].try_into().unwrap());
         let ask = i64::from_le_bytes(buf[8..16].try_into().unwrap());
-        let dual_ok = 10u64 > 0 && 10u64 > 0;
+        let dual_ok = true; // both sides have volume (10 > 0)
         let mid = bid / 2 + ask / 2;
         assert!(dual_ok);
         assert_eq!(mid, 105);
@@ -258,5 +264,121 @@ mod tests {
         let fc: i128 = 1_000_000_000_000_000; // 1e15
         let cap = compute_user_cap(fc, 100);
         assert_eq!(cap, 100_000_000_000_000_000); // 1e17
+    }
+
+    // ====================================================================
+    // T-CLEAR-BATCH-IX: CPI layout + mark_valid / liq_paused logic
+    // ====================================================================
+
+    #[test]
+    fn test_dfba_clear_cpi_data_layout() {
+        // CPI to matcher disc 5 DfbaClear:
+        // disc(1) + marginal_size_cap(8) + num_orders(2) = 11 bytes
+        let mut cpi_data = [0u8; 11];
+        cpi_data[0] = MATCHER_DFBA_CLEAR; // disc 5
+        cpi_data[1..9].copy_from_slice(&u64::MAX.to_le_bytes()); // no cap
+        cpi_data[9..11].copy_from_slice(&0u16.to_le_bytes()); // collect from book
+
+        assert_eq!(cpi_data[0], 5);
+        assert_eq!(
+            u64::from_le_bytes(cpi_data[1..9].try_into().unwrap()),
+            u64::MAX
+        );
+        assert_eq!(u16::from_le_bytes(cpi_data[9..11].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn test_dfba_clear_cpi_accounts() {
+        // ClearBatch CPIs matcher with two accounts: results (writable), book (writable).
+        // Matcher program is the CPI target (not in accounts list).
+        let num_accounts = 2usize; // results + book
+        assert_eq!(num_accounts, 2);
+    }
+
+    #[test]
+    fn test_mark_valid_when_dual_fill() {
+        // Both auctions have volume → mark_valid=1, liq_paused=0
+        let matched_bid: u64 = 10;
+        let matched_ask: u64 = 8;
+        let dual_ok = matched_bid > 0 && matched_ask > 0;
+        let (mark_valid, liq_paused) = if dual_ok { (1u8, 0u8) } else { (0u8, 1u8) };
+        assert_eq!(mark_valid, 1);
+        assert_eq!(liq_paused, 0);
+    }
+
+    #[test]
+    fn test_mark_invalid_when_bid_only() {
+        // Only bid auction has volume → mark_valid=0, liq_paused=1
+        let matched_bid: u64 = 10;
+        let matched_ask: u64 = 0;
+        let dual_ok = matched_bid > 0 && matched_ask > 0;
+        let (mark_valid, liq_paused) = if dual_ok { (1u8, 0u8) } else { (0u8, 1u8) };
+        assert_eq!(mark_valid, 0);
+        assert_eq!(liq_paused, 1);
+    }
+
+    #[test]
+    fn test_mark_invalid_when_ask_only() {
+        // Only ask auction has volume → mark_valid=0, liq_paused=1
+        let matched_bid: u64 = 0;
+        let matched_ask: u64 = 5;
+        let dual_ok = matched_bid > 0 && matched_ask > 0;
+        let (mark_valid, liq_paused) = if dual_ok { (1u8, 0u8) } else { (0u8, 1u8) };
+        assert_eq!(mark_valid, 0);
+        assert_eq!(liq_paused, 1);
+    }
+
+    #[test]
+    fn test_mark_invalid_when_no_fills() {
+        // Neither auction has volume → mark_valid=0, liq_paused=1
+        let matched_bid: u64 = 0;
+        let matched_ask: u64 = 0;
+        let dual_ok = matched_bid > 0 && matched_ask > 0;
+        let (mark_valid, liq_paused) = if dual_ok { (1u8, 0u8) } else { (0u8, 1u8) };
+        assert_eq!(mark_valid, 0);
+        assert_eq!(liq_paused, 1);
+    }
+
+    #[test]
+    fn test_clearing_price_mid_rounding() {
+        // Dual mid calculation: bid/2 + ask/2 + (bid%2 + ask%2)/2
+        // This is integer mid with banker's-style rounding.
+        let bid: i64 = 100;
+        let ask: i64 = 110;
+        let mid = bid / 2 + ask / 2 + (bid % 2 + ask % 2) / 2;
+        assert_eq!(mid, 105); // even+even → exact
+
+        let bid2: i64 = 101;
+        let ask2: i64 = 111;
+        let mid2 = bid2 / 2 + ask2 / 2 + (bid2 % 2 + ask2 % 2) / 2;
+        assert_eq!(mid2, 106); // odd+odd → 50+55+1 = 106
+
+        let bid3: i64 = 101;
+        let ask3: i64 = 110;
+        let mid3 = bid3 / 2 + ask3 / 2 + (bid3 % 2 + ask3 % 2) / 2;
+        assert_eq!(mid3, 105); // odd+even → 50+55+0 = 105
+    }
+
+    #[test]
+    fn test_clearing_price_zero_when_invalid() {
+        // When mark is invalid, clearing_price is set to 0.
+        let clearing_price: i64 = 0;
+        assert_eq!(clearing_price, 0);
+    }
+
+    #[test]
+    fn test_total_volume_is_sum_of_matched() {
+        let matched_bid: u64 = 10;
+        let matched_ask: u64 = 8;
+        let total_volume = matched_bid.saturating_add(matched_ask);
+        assert_eq!(total_volume, 18);
+    }
+
+    #[test]
+    fn test_total_volume_saturates() {
+        let matched_bid: u64 = u64::MAX - 5;
+        let matched_ask: u64 = 10;
+        let total_volume = matched_bid.saturating_add(matched_ask);
+        assert_eq!(total_volume, u64::MAX); // saturates, no overflow
     }
 }

@@ -7,7 +7,7 @@ import * as sdk from '@mgk/sdk';
 import { create } from 'zustand';
 
 import { config } from '@/lib/config';
-import { resolveBatchAddress, resolveRegistryAddress } from '@/lib/onchainAccounts';
+import { resolveOpenBatch, resolveRegistryAddress } from '@/lib/onchainAccounts';
 
 type BatchState = sdk.state.BatchState;
 type RegistryState = sdk.state.RegistryState;
@@ -112,27 +112,29 @@ export const useBatchStore = create<BatchStore>((set, get) => ({
         return;
       }
 
-      const activeBatchId = registry.batchIdCounter - 1n;
-      const batchPda = await resolveBatchAddress({
-        batchId: activeBatchId,
-        programId,
-        batchAddress: batchAddress ?? null,
-        indexerUrl,
-      });
-      const batchAccounts = await connection.getMultipleAccountsInfo([batchPda]);
-      const batchAcc = batchAccounts[0] ?? null;
-      if (!batchAcc) {
-        set({
-          data: null,
-          registry,
-          currentBatchId: activeBatchId,
-          loading: false,
-          error: null,
-          lastFetchedAt: Date.now(),
+      let data: sdk.state.BatchState | null = null;
+      let activeBatchId: bigint | null = null;
+      try {
+        const open = await resolveOpenBatch({
+          connection,
+          programId,
+          batchIdCounter: registry.batchIdCounter,
+          batchAddress: batchAddress ?? null,
+          indexerUrl,
+          includeCompletedPhases: true,
         });
-        return;
+        data = open.batch;
+        activeBatchId = open.batchId;
+      } catch (e) {
+        // A confirmed absence is an ordinary idle state. Transport/RPC
+        // failures must reach the outer handler so the last good batch stays
+        // visible instead of flickering to an empty state.
+        if (!(e instanceof Error) || !e.message.startsWith('No open collecting batch found')) {
+          throw e;
+        }
+        activeBatchId =
+          registry.batchIdCounter > 0n ? registry.batchIdCounter - 1n : 0n;
       }
-      const data = sdk.state.decodeBatch(new Uint8Array(batchAcc.data));
 
       set({
         data,

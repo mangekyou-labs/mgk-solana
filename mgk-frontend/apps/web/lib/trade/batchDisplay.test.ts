@@ -5,6 +5,7 @@ import * as sdk from '@mgk/sdk';
 import {
   PHASE_LABEL,
   PHASE_TONE,
+  describeBatchPhase,
   deriveDeadline,
   formatBatchCountdown,
   formatSlotDuration,
@@ -35,6 +36,12 @@ function makeBatchData(
     totalNotional: 0n,
     slashedDeposits: 0n,
     bump: 255,
+    bidClearingPrice: 0n,
+    askClearingPrice: 0n,
+    matchedBidQty: 0n,
+    matchedAskQty: 0n,
+    markValid: false,
+    liqPaused: true,
   };
 }
 
@@ -97,18 +104,18 @@ describe('formatSlotDuration', () => {
 });
 
 describe('deriveDeadline', () => {
-  it('uses commitDeadlineSlot for the Committing phase', () => {
+  it('uses collection deadline for the Collecting phase', () => {
     const d: DeadlineInfo = deriveDeadline(
-      sdk.state.BatchStatus.Committing,
-      makeBatchData(sdk.state.BatchStatus.Committing, { commitDeadlineSlot: 50_000n }),
+      sdk.state.BatchStatus.Collecting,
+      makeBatchData(sdk.state.BatchStatus.Collecting, { commitDeadlineSlot: 50_000n }),
       49_999,
     );
     expect(d.deadline).toBe(50_000n);
     expect(d.isPastDeadline).toBe(false);
-    expect(d.deadlineLabel).toBe('commit deadline');
+    expect(d.deadlineLabel).toBe('collection closes');
   });
 
-  it('uses revealDeadlineSlot for the Revealing phase', () => {
+  it('labels legacy reveal wire value as closed (DFBA skips reveal)', () => {
     const d: DeadlineInfo = deriveDeadline(
       sdk.state.BatchStatus.Revealing,
       makeBatchData(sdk.state.BatchStatus.Revealing, { revealDeadlineSlot: 80_000n }),
@@ -116,10 +123,10 @@ describe('deriveDeadline', () => {
     );
     expect(d.deadline).toBe(80_000n);
     expect(d.isPastDeadline).toBe(true);
-    expect(d.deadlineLabel).toBe('reveal deadline');
+    expect(d.deadlineLabel).toBe('window closed');
   });
 
-  it('uses closeSlot for the Clearing phase', () => {
+  it('uses auction label for the Clearing phase', () => {
     const d: DeadlineInfo = deriveDeadline(
       sdk.state.BatchStatus.Clearing,
       makeBatchData(sdk.state.BatchStatus.Clearing, { closeSlot: 90_000n }),
@@ -127,7 +134,7 @@ describe('deriveDeadline', () => {
     );
     expect(d.deadline).toBe(90_000n);
     expect(d.isPastDeadline).toBe(false);
-    expect(d.deadlineLabel).toBe('close slot');
+    expect(d.deadlineLabel).toBe('auction in progress');
   });
 
   it('returns no deadline for the Settled phase', () => {
@@ -143,8 +150,8 @@ describe('deriveDeadline', () => {
 
   it('treats null currentSlot as "not past deadline"', () => {
     const d: DeadlineInfo = deriveDeadline(
-      sdk.state.BatchStatus.Committing,
-      makeBatchData(sdk.state.BatchStatus.Committing, { commitDeadlineSlot: 50_000n }),
+      sdk.state.BatchStatus.Collecting,
+      makeBatchData(sdk.state.BatchStatus.Collecting, { commitDeadlineSlot: 50_000n }),
       null,
     );
     expect(d.isPastDeadline).toBe(false);
@@ -152,15 +159,15 @@ describe('deriveDeadline', () => {
 });
 
 describe('formatBatchCountdown', () => {
-  it('shows accepting orders for Committing past deadline while below n_min', () => {
-    const batch = makeBatchData(sdk.state.BatchStatus.Committing, {
+  it('shows accepting orders for Collecting past deadline while below n_min', () => {
+    const batch = makeBatchData(sdk.state.BatchStatus.Collecting, {
       commitDeadlineSlot: 50_000n,
     });
     batch.totalCommitments = 0;
 
     expect(
       formatBatchCountdown(
-        sdk.state.BatchStatus.Committing,
+        sdk.state.BatchStatus.Collecting,
         batch,
         50_100,
         makeRegistryState({ nMin: 1 }),
@@ -168,7 +175,7 @@ describe('formatBatchCountdown', () => {
     ).toBe('accepting orders');
     expect(
       isPastActionDeadline(
-        sdk.state.BatchStatus.Committing,
+        sdk.state.BatchStatus.Collecting,
         batch,
         50_100,
         makeRegistryState({ nMin: 1 }),
@@ -176,15 +183,15 @@ describe('formatBatchCountdown', () => {
     ).toBe(false);
   });
 
-  it('keeps past deadline warning once Committing has met n_min', () => {
-    const batch = makeBatchData(sdk.state.BatchStatus.Committing, {
+  it('keeps past deadline warning once Collecting has met n_min', () => {
+    const batch = makeBatchData(sdk.state.BatchStatus.Collecting, {
       commitDeadlineSlot: 50_000n,
     });
     batch.totalCommitments = 1;
 
     expect(
       formatBatchCountdown(
-        sdk.state.BatchStatus.Committing,
+        sdk.state.BatchStatus.Collecting,
         batch,
         50_100,
         makeRegistryState({ nMin: 1 }),
@@ -192,7 +199,7 @@ describe('formatBatchCountdown', () => {
     ).toBe('past deadline');
     expect(
       isPastActionDeadline(
-        sdk.state.BatchStatus.Committing,
+        sdk.state.BatchStatus.Collecting,
         batch,
         50_100,
         makeRegistryState({ nMin: 1 }),
@@ -200,26 +207,121 @@ describe('formatBatchCountdown', () => {
     ).toBe(true);
   });
 
-  it('keeps past deadline warning for expired reveal windows', () => {
-    const batch = makeBatchData(sdk.state.BatchStatus.Revealing, {
-      revealDeadlineSlot: 50_000n,
+  it('shows dual auction for Clearing phase', () => {
+    const batch = makeBatchData(sdk.state.BatchStatus.Clearing, {
+      closeSlot: 50_000n,
+    });
+    expect(
+      formatBatchCountdown(
+        sdk.state.BatchStatus.Clearing,
+        batch,
+        49_000,
+        makeRegistryState({ nMin: 1 }),
+      ),
+    ).toBe('dual auction…');
+  });
+});
+
+describe('describeBatchPhase', () => {
+  it('explains that Collecting accepts open orders before the close slot', () => {
+    expect(
+      describeBatchPhase(
+        sdk.state.BatchStatus.Collecting,
+        makeBatchData(sdk.state.BatchStatus.Collecting, {
+          commitDeadlineSlot: 50_000n,
+        }),
+        49_900,
+      ),
+    ).toEqual({
+      headline: 'Orders open',
+      detail: 'Dual auction in 00:00:40',
+    });
+  });
+
+  it('explains that an expired Collecting batch is waiting for a keeper', () => {
+    expect(
+      describeBatchPhase(
+        sdk.state.BatchStatus.Collecting,
+        makeBatchData(sdk.state.BatchStatus.Collecting, {
+          commitDeadlineSlot: 50_000n,
+        }),
+        50_000,
+      ),
+    ).toEqual({
+      headline: 'Ready to clear',
+      detail: 'Waiting for keeper',
+    });
+  });
+
+  it('shows how late the keeper is after the close slot', () => {
+    expect(
+      describeBatchPhase(
+        sdk.state.BatchStatus.Collecting,
+        makeBatchData(sdk.state.BatchStatus.Collecting, {
+          commitDeadlineSlot: 50_000n,
+        }),
+        50_500,
+      ),
+    ).toEqual({
+      headline: 'Ready to clear',
+      detail: 'Waiting for keeper · 00:03:20 late',
+    });
+  });
+
+  it('keeps an expired Collecting batch open until minimum flow is met', () => {
+    const batch = makeBatchData(sdk.state.BatchStatus.Collecting, {
+      commitDeadlineSlot: 50_000n,
     });
 
     expect(
-      formatBatchCountdown(
-        sdk.state.BatchStatus.Revealing,
+      describeBatchPhase(
+        sdk.state.BatchStatus.Collecting,
         batch,
-        50_100,
+        50_001,
         makeRegistryState({ nMin: 1 }),
       ),
-    ).toBe('past deadline');
+    ).toEqual({
+      headline: 'Orders open',
+      detail: 'Waiting for minimum flow (0/1)',
+    });
+  });
+
+  it('explains the dual uniform-price work during Clearing', () => {
     expect(
-      isPastActionDeadline(
-        sdk.state.BatchStatus.Revealing,
-        batch,
-        50_100,
-        makeRegistryState({ nMin: 1 }),
+      describeBatchPhase(
+        sdk.state.BatchStatus.Clearing,
+        makeBatchData(sdk.state.BatchStatus.Clearing),
+        50_001,
       ),
-    ).toBe(true);
+    ).toEqual({
+      headline: 'Orders closed',
+      detail: 'Matching maker and taker flow at uniform prices',
+    });
+  });
+
+  it('explains a valid dual clear after settlement', () => {
+    const batch = makeBatchData(sdk.state.BatchStatus.Settled);
+    batch.markValid = true;
+    batch.liqPaused = false;
+
+    expect(
+      describeBatchPhase(sdk.state.BatchStatus.Settled, batch, 50_001),
+    ).toEqual({
+      headline: 'Fills settled',
+      detail: 'Mark updated',
+    });
+  });
+
+  it('explains liquidation safety when settlement has no two-sided match', () => {
+    const batch = makeBatchData(sdk.state.BatchStatus.Settled);
+    batch.markValid = false;
+    batch.liqPaused = true;
+
+    expect(
+      describeBatchPhase(sdk.state.BatchStatus.Settled, batch, 50_001),
+    ).toEqual({
+      headline: 'No two-sided match',
+      detail: 'Mark unchanged · Liquidations paused',
+    });
   });
 });

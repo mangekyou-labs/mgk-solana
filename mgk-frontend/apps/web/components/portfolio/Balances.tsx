@@ -23,7 +23,7 @@ function lamportsToSolNumber(lamports: bigint): number {
 }
 
 export function Balances({ data, loading, className }: BalancesProps) {
-  if (loading) {
+  if (loading && !data) {
     return (
       <section
         data-testid="balances"
@@ -65,6 +65,7 @@ export function Balances({ data, loading, className }: BalancesProps) {
     <section
       data-testid="balances"
       data-state="ready"
+      data-refreshing={loading ? 'true' : 'false'}
       className={['rounded-md border border-border bg-surface-1 p-4', className ?? '']
         .filter(Boolean)
         .join(' ')}

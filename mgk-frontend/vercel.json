@@ -1,0 +1,6 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "pnpm -F @mgk/sdk build && pnpm -F web build",
+  "installCommand": "pnpm install --filter web --filter @mgk/sdk --ignore-scripts",
+  "outputDirectory": "apps/web/.next"
+}

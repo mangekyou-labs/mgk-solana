@@ -1,6 +1,12 @@
 import Database from 'better-sqlite3';
 import type { Database as DB } from 'better-sqlite3';
 
+export interface SyncState {
+  processedThroughSlot: number | null;
+  lastSuccessfulSyncAt: number | null;
+  lastSyncErrorAt: number | null;
+}
+
 export interface Store {
   db: DB;
   insertFill: ReturnType<DB['prepare']>;
@@ -11,11 +17,17 @@ export interface Store {
   recompute24hVolume: ReturnType<DB['prepare']>;
   insertPortfolio: ReturnType<DB['prepare']>;
   getPortfolio: ReturnType<DB['prepare']>;
+  getSyncState: () => SyncState;
+  updateSyncSuccess: (slot: number, timestampMs: number) => void;
+  updateSyncError: (timestampMs: number) => void;
+  setSyncCursor: (slot: number) => void;
+  isWritable: () => boolean;
   close: () => void;
 }
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS fills (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   slot INTEGER NOT NULL,
   batch_id INTEGER NOT NULL,
   instrument_id INTEGER NOT NULL,
@@ -26,7 +38,7 @@ CREATE TABLE IF NOT EXISTS fills (
   maker_pubkey BLOB NOT NULL,
   tx_signature BLOB NOT NULL,
   is_maker INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (tx_signature, instrument_id, slot)
+  UNIQUE (tx_signature, instrument_id, slot, taker_pubkey, is_maker, taker_side, price, qty)
 );
 CREATE INDEX IF NOT EXISTS idx_fills_instrument_slot
   ON fills(instrument_id, slot DESC);
@@ -92,6 +104,13 @@ CREATE TABLE IF NOT EXISTS portfolios (
   created_tx TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sync_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  processed_through_slot INTEGER,
+  last_successful_sync_at INTEGER,
+  last_sync_error_at INTEGER
+);
+
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 `;
@@ -100,6 +119,21 @@ export function createStore(dbPath = ':memory:'): Store {
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA);
+
+  // Keep the configured SOL market queryable before the first fill. The
+  // frontend treats this route as a live market-state contract, so an empty
+  // market is a valid zero-valued state rather than a 404/error loop.
+  db.prepare(`
+    INSERT OR IGNORE INTO market_state
+      (instrument_id, last_price, mark_price, open_interest_long,
+       open_interest_short, funding_rate, volume_24h, updated_ts)
+    VALUES (0, 0, 0, 0, 0, 0, 0, 0)
+  `).run();
+
+  db.prepare(`
+    INSERT OR IGNORE INTO sync_state (id, processed_through_slot, last_successful_sync_at, last_sync_error_at)
+    VALUES (1, NULL, NULL, NULL)
+  `).run();
 
   const insertFill = db.prepare(`
     INSERT OR IGNORE INTO fills (slot, batch_id, instrument_id, taker_side, price, qty, taker_pubkey, maker_pubkey, tx_signature, is_maker)
@@ -159,6 +193,34 @@ export function createStore(dbPath = ':memory:'): Store {
     SELECT portfolio_pubkey FROM portfolios WHERE user_pubkey = ?
   `);
 
+  const selectSyncState = db.prepare(`
+    SELECT processed_through_slot, last_successful_sync_at, last_sync_error_at
+    FROM sync_state WHERE id = 1
+  `);
+
+  const updateSuccessStmt = db.prepare(`
+    UPDATE sync_state
+    SET processed_through_slot = CASE
+          WHEN processed_through_slot IS NULL THEN ?
+          WHEN ? > processed_through_slot THEN ?
+          ELSE processed_through_slot
+        END,
+        last_successful_sync_at = ?
+    WHERE id = 1
+  `);
+
+  const updateErrorStmt = db.prepare(`
+    UPDATE sync_state
+    SET last_sync_error_at = ?
+    WHERE id = 1
+  `);
+
+  const setCursorStmt = db.prepare(`
+    UPDATE sync_state
+    SET processed_through_slot = ?
+    WHERE id = 1
+  `);
+
   return {
     db,
     insertFill,
@@ -169,6 +231,35 @@ export function createStore(dbPath = ':memory:'): Store {
     recompute24hVolume,
     insertPortfolio,
     getPortfolio,
+    getSyncState: () => {
+      const row = selectSyncState.get() as {
+        processed_through_slot: number | null;
+        last_successful_sync_at: number | null;
+        last_sync_error_at: number | null;
+      } | undefined;
+      return {
+        processedThroughSlot: row?.processed_through_slot ?? null,
+        lastSuccessfulSyncAt: row?.last_successful_sync_at ?? null,
+        lastSyncErrorAt: row?.last_sync_error_at ?? null,
+      };
+    },
+    updateSyncSuccess: (slot: number, timestampMs: number) => {
+      updateSuccessStmt.run(slot, slot, slot, timestampMs);
+    },
+    updateSyncError: (timestampMs: number) => {
+      updateErrorStmt.run(timestampMs);
+    },
+    setSyncCursor: (slot: number) => {
+      setCursorStmt.run(slot);
+    },
+    isWritable: () => {
+      try {
+        const test = db.prepare('SELECT 1').get();
+        return test !== undefined;
+      } catch {
+        return false;
+      }
+    },
     close: () => db.close(),
   };
 }

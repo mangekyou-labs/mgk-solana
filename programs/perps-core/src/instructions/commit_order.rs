@@ -1,11 +1,6 @@
 use crate::state::Commitment;
 use mgk_common::MgkError;
-use pinocchio::{
-    account_info::AccountInfo,
-    msg,
-    pubkey::Pubkey,
-    ProgramResult,
-};
+use pinocchio::{account_info::AccountInfo, msg, pubkey::Pubkey, ProgramResult};
 
 #[repr(C)]
 #[cfg(any(target_os = "solana", feature = "host-hash"))]
@@ -23,8 +18,7 @@ extern "C" {
 const COMMITMENT_SPACE: usize = core::mem::size_of::<Commitment>();
 #[allow(dead_code)]
 const SYSTEM_PROGRAM_ID_BYTES: [u8; 32] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 /// Host-side SHA-256 fallback so the lib compiles for non-BPF targets
@@ -88,15 +82,42 @@ pub fn compute_commitment_hash(
         let batch_bytes = batch_id.to_le_bytes();
 
         let parts: [SolBytes; 9] = [
-            SolBytes { addr: order_type_bytes.as_ptr(), len: 1 },
-            SolBytes { addr: instrument_id_bytes.as_ptr(), len: 2 },
-            SolBytes { addr: reduce_only_bytes.as_ptr(), len: 1 },
-            SolBytes { addr: side_bytes.as_ptr(), len: 1 },
-            SolBytes { addr: price_bytes.as_ptr(), len: 8 },
-            SolBytes { addr: qty_bytes.as_ptr(), len: 8 },
-            SolBytes { addr: salt_bytes.as_ptr(), len: 8 },
-            SolBytes { addr: user_bytes.as_ptr(), len: 32 },
-            SolBytes { addr: batch_bytes.as_ptr(), len: 8 },
+            SolBytes {
+                addr: order_type_bytes.as_ptr(),
+                len: 1,
+            },
+            SolBytes {
+                addr: instrument_id_bytes.as_ptr(),
+                len: 2,
+            },
+            SolBytes {
+                addr: reduce_only_bytes.as_ptr(),
+                len: 1,
+            },
+            SolBytes {
+                addr: side_bytes.as_ptr(),
+                len: 1,
+            },
+            SolBytes {
+                addr: price_bytes.as_ptr(),
+                len: 8,
+            },
+            SolBytes {
+                addr: qty_bytes.as_ptr(),
+                len: 8,
+            },
+            SolBytes {
+                addr: salt_bytes.as_ptr(),
+                len: 8,
+            },
+            SolBytes {
+                addr: user_bytes.as_ptr(),
+                len: 32,
+            },
+            SolBytes {
+                addr: batch_bytes.as_ptr(),
+                len: 8,
+            },
         ];
 
         let mut hash = [0u8; 32];
@@ -133,7 +154,6 @@ pub fn process_commit_order(
     Err(MgkError::InvalidInstruction.into())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,7 +189,7 @@ mod tests {
     fn commitment_space_matches_commitment_layout() {
         assert_eq!(COMMITMENT_SPACE, core::mem::size_of::<Commitment>());
         // Layout may grow; pin only that constant matches size_of.
-        assert!(COMMITMENT_SPACE >= 168);
+        const { assert!(COMMITMENT_SPACE >= 168) };
     }
 
     #[test]
@@ -181,7 +201,10 @@ mod tests {
         ix_data[12..20].copy_from_slice(&(COMMITMENT_SPACE as u64).to_le_bytes());
 
         assert_eq!(u32::from_le_bytes(ix_data[0..4].try_into().unwrap()), 0);
-        assert_eq!(u64::from_le_bytes(ix_data[4..12].try_into().unwrap()), lamports);
+        assert_eq!(
+            u64::from_le_bytes(ix_data[4..12].try_into().unwrap()),
+            lamports
+        );
         assert_eq!(
             u64::from_le_bytes(ix_data[12..20].try_into().unwrap()),
             COMMITMENT_SPACE as u64,
@@ -208,13 +231,22 @@ mod tests {
 
         // New fields added in 6g should also affect the hash.
         let h6 = test_hash_commitment(1, 1, false, 0, 100, 10, 42, &user, 1);
-        assert_ne!(h1, h6, "Different order_type should produce different hashes");
+        assert_ne!(
+            h1, h6,
+            "Different order_type should produce different hashes"
+        );
 
         let h7 = test_hash_commitment(0, 2, false, 0, 100, 10, 42, &user, 1);
-        assert_ne!(h1, h7, "Different instrument_id should produce different hashes");
+        assert_ne!(
+            h1, h7,
+            "Different instrument_id should produce different hashes"
+        );
 
         let h8 = test_hash_commitment(0, 1, true, 0, 100, 10, 42, &user, 1);
-        assert_ne!(h1, h8, "Different reduce_only should produce different hashes");
+        assert_ne!(
+            h1, h8,
+            "Different reduce_only should produce different hashes"
+        );
     }
 
     #[test]

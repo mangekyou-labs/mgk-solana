@@ -1,11 +1,11 @@
+use crate::state::clearing::{BuyEntry, SellEntry};
 use crate::state::{
     book_state_from_bytes_mut, cancel_all_for_user, cancel_resting_by_id,
     clob_match_with_caps_into, clob_match_with_risk_into, compute_clearing_into,
     default_risk_check, modify_resting_qty, place_resting, separate_priority_queues,
-    shuffle_orders, FillReceipt, LimitOrder, OrderType, PartitionedOrders, Side, MatchResult,
-    MAX_FILLS_PER_BATCH, MAX_ORDERS, DFBA_MAX_ORDERS, DfbaOrder, DualClearScratch,
+    shuffle_orders, DfbaOrder, DualClearScratch, FillReceipt, LimitOrder, MatchResult, OrderType,
+    PartitionedOrders, Side, DFBA_MAX_ORDERS, MAX_FILLS_PER_BATCH, MAX_ORDERS,
 };
-use crate::state::clearing::{BuyEntry, SellEntry};
 use core::alloc::Layout;
 use pinocchio::{
     account_info::AccountInfo, msg, program_error::ProgramError, pubkey::Pubkey, ProgramResult,
@@ -13,10 +13,10 @@ use pinocchio::{
 
 #[cfg(target_os = "solana")]
 extern crate alloc;
-#[cfg(not(target_os = "solana"))]
-use std::alloc::alloc_zeroed;
 #[cfg(target_os = "solana")]
 use alloc::alloc::alloc_zeroed;
+#[cfg(not(target_os = "solana"))]
+use std::alloc::alloc_zeroed;
 
 // =============================================================================
 // Heap scratch — BPF-safe allocation via the BumpAllocator
@@ -226,7 +226,7 @@ pub fn process_compute_clearing(
             qty,
             reduce_only,
             cancel_order_id: 0,
-        is_maker: false,
+            is_maker: false,
         };
     }
 
@@ -627,41 +627,40 @@ fn append_alloc_fills(
     program_id: &Pubkey,
 ) -> Result<u16, ProgramError> {
     let mut w = start_index as usize;
-    let mut write_one = |user: &Pubkey,
-                         order_id: u64,
-                         fill_qty: u64,
-                         is_maker: bool|
-     -> Result<(), ProgramError> {
-        if fill_qty == 0 {
-            return Ok(());
-        }
-        {
-            let mut data = results_account.try_borrow_mut_data()?;
-            let need = DFBA_RESULT_HEADER_BYTES
-                .checked_add(
-                    (w + 1)
-                        .checked_mul(DFBA_FILL_WIRE_BYTES)
-                        .ok_or(ProgramError::InvalidInstructionData)?,
-                )
-                .ok_or(ProgramError::InvalidInstructionData)?;
-            if data.len() < need {
-                return Err(ProgramError::AccountDataTooSmall);
+    let mut write_one =
+        |user: &Pubkey, order_id: u64, fill_qty: u64, is_maker: bool| -> Result<(), ProgramError> {
+            if fill_qty == 0 {
+                return Ok(());
             }
-            let price = alloc.clearing_price;
-            encode_dfba_fill(&mut data, w, user, order_id, fill_qty, price, is_maker, auction);
-        }
-        // Apply to book outside results borrow.
-        if accounts.len() >= 2 {
-            let book_account = &accounts[1];
-            if book_account.is_writable() && book_account.owner() == program_id {
-                let mut book_data = book_account.try_borrow_mut_data()?;
-                let state = book_state_from_bytes_mut(&mut book_data)?;
-                apply_one_fill_to_book(state, order_id, fill_qty);
+            {
+                let mut data = results_account.try_borrow_mut_data()?;
+                let need = DFBA_RESULT_HEADER_BYTES
+                    .checked_add(
+                        (w + 1)
+                            .checked_mul(DFBA_FILL_WIRE_BYTES)
+                            .ok_or(ProgramError::InvalidInstructionData)?,
+                    )
+                    .ok_or(ProgramError::InvalidInstructionData)?;
+                if data.len() < need {
+                    return Err(ProgramError::AccountDataTooSmall);
+                }
+                let price = alloc.clearing_price;
+                encode_dfba_fill(
+                    &mut data, w, user, order_id, fill_qty, price, is_maker, auction,
+                );
             }
-        }
-        w += 1;
-        Ok(())
-    };
+            // Apply to book outside results borrow.
+            if accounts.len() >= 2 {
+                let book_account = &accounts[1];
+                if book_account.is_writable() && book_account.owner() == program_id {
+                    let mut book_data = book_account.try_borrow_mut_data()?;
+                    let state = book_state_from_bytes_mut(&mut book_data)?;
+                    apply_one_fill_to_book(state, order_id, fill_qty);
+                }
+            }
+            w += 1;
+            Ok(())
+        };
 
     for i in 0..alloc.maker_fill_count {
         let f = &alloc.maker_fills[i];
@@ -689,6 +688,7 @@ fn apply_one_fill_to_book(state: &mut crate::state::BookState, order_id: u64, fi
     }
 }
 
+#[allow(dead_code)]
 fn apply_dfba_fills_to_book(
     state: &mut crate::state::BookState,
     dual: &crate::state::DualAuctionResult,
@@ -734,6 +734,7 @@ fn write_dfba_empty_result(account: &AccountInfo) -> ProgramResult {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn write_dfba_results(
     account: &AccountInfo,
     dual: &crate::state::DualAuctionResult,
@@ -798,6 +799,7 @@ fn write_dfba_results(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_dfba_fill(
     data: &mut [u8],
     index: usize,
@@ -815,6 +817,102 @@ fn encode_dfba_fill(
     data[off + 48..off + 56].copy_from_slice(&fill_price.to_le_bytes());
     data[off + 56] = if is_maker { 1 } else { 0 };
     data[off + 57] = auction;
+}
+
+// =============================================================================
+// InitializeBook (disc 7) — create matcher-owned book PDA for an instrument
+// =============================================================================
+
+/// System Program ID (all zeros).
+const SYSTEM_PROGRAM_ID_BYTES: [u8; 32] = [0u8; 32];
+
+/// Wire after disc: instrument_id(2) + bump(1) = 3 bytes.
+pub const INIT_BOOK_DATA_LEN: usize = 2 + 1;
+
+/// Create and zero-init a book PDA.
+///
+/// Accounts:
+/// 0. `[writable]` Book PDA (`["book", instrument_id_le]`)
+/// 1. `[signer, writable]` Payer (governance / keeper)
+/// 2. `[]` System program
+///
+/// Data: `instrument_id(2 LE) + bump(1)`.
+/// Idempotent: if book already has full size, succeeds without re-creating.
+pub fn process_initialize_book(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    if accounts.len() < 3 {
+        msg!("Error: InitializeBook needs book, payer, system_program");
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    if data.len() < INIT_BOOK_DATA_LEN {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
+    let book_account = &accounts[0];
+    let payer = &accounts[1];
+    let _system = &accounts[2];
+
+    if !payer.is_signer() {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    if !book_account.is_writable() {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
+    let instrument_id = u16::from_le_bytes([data[0], data[1]]);
+    let bump = data[2];
+    let book_space = crate::state::book_account_size();
+
+    // Already initialized — nothing to do.
+    if book_account.data_len() >= book_space && book_account.owner() == program_id {
+        msg!("InitializeBook: already exists");
+        return Ok(());
+    }
+
+    if book_account.data_len() > 0 && book_account.owner() != program_id {
+        msg!("Error: book account has unexpected owner");
+        return Err(ProgramError::IllegalOwner);
+    }
+
+    use pinocchio::instruction::{AccountMeta, Instruction, Signer};
+    use pinocchio::program::invoke_signed;
+    use pinocchio::sysvars::{rent::Rent, Sysvar};
+
+    let rent = Rent::get()?;
+    let lamports = rent.minimum_balance(book_space);
+    let id_le = instrument_id.to_le_bytes();
+    let (expected_pda, _) = pinocchio::pubkey::find_program_address(&[b"book", &id_le], program_id);
+    if book_account.key() != &expected_pda {
+        msg!("Error: book PDA mismatch");
+        return Err(ProgramError::InvalidSeeds);
+    }
+
+    let mut ix_data = [0u8; 52];
+    ix_data[0..4].copy_from_slice(&0u32.to_le_bytes()); // CreateAccount
+    ix_data[4..12].copy_from_slice(&lamports.to_le_bytes());
+    ix_data[12..20].copy_from_slice(&(book_space as u64).to_le_bytes());
+    ix_data[20..52].copy_from_slice(program_id.as_ref());
+
+    let metas = [
+        AccountMeta::writable_signer(payer.key()),
+        AccountMeta::writable_signer(book_account.key()),
+    ];
+    let sys_id = Pubkey::from(SYSTEM_PROGRAM_ID_BYTES);
+    let ix = Instruction {
+        program_id: &sys_id,
+        accounts: &metas,
+        data: &ix_data,
+    };
+    let bump_seed = [bump];
+    let signer_seeds = pinocchio::seeds!(b"book", id_le.as_slice(), &bump_seed);
+    let signer = Signer::from(&signer_seeds);
+    invoke_signed::<2>(&ix, &[payer, book_account], &[signer])?;
+    // createAccount zeros account data → empty BookState (resting_count=0).
+    msg!("InitializeBook: book PDA created");
+    Ok(())
 }
 
 // =============================================================================
@@ -1200,7 +1298,7 @@ pub fn process_clear_and_match(
             qty,
             reduce_only,
             cancel_order_id: 0,
-        is_maker: false,
+            is_maker: false,
         };
 
         if order.order_type == OrderType::LimitGTC {
@@ -1279,7 +1377,7 @@ pub fn process_clear_and_match(
             qty,
             reduce_only,
             cancel_order_id: 0,
-        is_maker: false,
+            is_maker: false,
         };
     }
 
@@ -1386,7 +1484,7 @@ mod tests {
             qty,
             reduce_only: false,
             cancel_order_id: 0,
-        is_maker: false,
+            is_maker: false,
         }
     }
 

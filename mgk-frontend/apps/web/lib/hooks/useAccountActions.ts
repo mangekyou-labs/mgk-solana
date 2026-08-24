@@ -3,7 +3,6 @@
 import { useCallback } from 'react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import {
-  PublicKey,
   Transaction,
   TransactionInstruction,
   SystemProgram,
@@ -26,27 +25,24 @@ export interface AccountActionResult {
 /**
  * Hook for portfolio lifecycle operations: create, deposit, withdraw.
  *
- * Portfolio creation flow (Solana 4.x + Phantom compatibility):
- * - Browser wallets cannot sign SystemProgram.createAccount for PDA addresses
- *   (Phantom blocks at simulation time).
- * - Solution: keeper pre-creates AND initializes portfolio accounts via
- *   InitPortfolioForUser (disc 19). The user NEVER signs an InitPortfolio tx.
- * - The user's first signed tx is Deposit, which Phantom can simulate
- *   against the existing account → no simulation failure.
+ * Portfolio creation flow (T9.10 / DFBA):
+ * - The connected wallet sends InitPortfolioForUser (disc 19) directly,
+ *   signing as both payer and user. The on-chain instruction verifies that
+ *   `requested_portfolio_user == signer` (i.e. the user can only create
+ *   their own portfolio).
+ * - The derived Portfolio PDA is included as the target account; the
+ *   instruction creates it via SystemProgram.createAccount + init.
+ * - Browser wallets (Phantom) can sign this because the PDA is derived
+ *   from the connected wallet's pubkey, not a random keypair.
  */
 export function useAccountActions() {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
 
   /**
-   * Request portfolio creation from the keeper and poll on-chain until the
-   * account exists. Does NOT send any user-signed transaction — the keeper
-   * creates and initializes the portfolio via InitPortfolioForUser (disc 19).
-   *
-   * Once the account exists on-chain, refreshes the portfolio store so the
-   * UI auto-flips from "Init Portfolio" to "Deposit / Withdraw".
-   *
-   * Returns a synthetic "sig" (the portfolio PDA address) for toast display.
+   * Create and initialize the user's Portfolio PDA via InitPortfolioForUser
+   * (disc 19). The wallet signs as payer and the instruction verifies the
+   * requested user matches the signer — no indexer queue needed.
    */
   const initPortfolio = useCallback(async (): Promise<AccountActionResult> => {
     if (!publicKey) {
@@ -58,51 +54,35 @@ export function useAccountActions() {
       config.coreProgramId,
     );
 
-    // Step 1: Notify keeper to pre-create portfolio account via InitPortfolioForUser.
-    try {
-      const res = await fetch(`${config.indexerUrl}/api/portfolio/request-creation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userPubkey: publicKey.toBase58() }),
-      });
-      if (!res.ok) {
-        console.warn(`[portfolio-queue] request-creation failed: ${res.status}`);
-      } else {
-        const data = await res.json();
-        console.log(`[portfolio-queue] requested (queue size: ${data.queueSize})`);
-      }
-    } catch (err) {
-      // Non-fatal: keeper might be down; we'll still poll on-chain.
-      console.warn(`[portfolio-queue] request-creation fetch failed:`, err);
-    }
+    // InitPortfolioForUser (disc 19): wallet sends tx directly.
+    // Wire: disc(1) + user_pubkey(32) = 33 bytes.
+    const ixData = sdk.programs.encodeInitPortfolioForUser(publicKey.toBuffer());
 
-    // Step 2: Poll on-chain until the keeper creates the portfolio account.
-    // We poll the actual cluster (via the frontend's RPC) because the account
-    // must exist on-chain before the user's next signed tx (Deposit) will
-    // pass Phantom's simulation. Polling the indexer DB is insufficient
-    // because Phantom uses its own RPC.
-    const MAX_WAIT_MS = 30_000;
-    const POLL_INTERVAL_MS = 2_000;
-    const deadline = Date.now() + MAX_WAIT_MS;
+    const ix = new TransactionInstruction({
+      keys: [
+        { pubkey: publicKey, isSigner: true, isWritable: true },  // payer / fee-payer
+        { pubkey: portfolioPda, isSigner: false, isWritable: true },  // Portfolio PDA (created by instruction)
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      ],
+      programId: config.coreProgramId,
+      data: Buffer.from(ixData),
+    });
 
-    while (Date.now() < deadline) {
-      const acc = await connection.getAccountInfo(portfolioPda);
-      if (acc) {
-        console.log(
-          `[initPortfolio] Portfolio created on-chain at ${portfolioPda.toBase58()}`,
-        );
-        // Refresh the portfolio store so the UI flips to Deposit/Withdraw.
-        await usePortfolioStore.getState().refresh();
-        return { sig: portfolioPda.toBase58() };
-      }
-      console.log(`[initPortfolio] Waiting for keeper to create portfolio...`);
-      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    }
-
-    throw new Error(
-      'Portfolio creation timed out after 30s. Is the keeper running?',
+    const tx = new Transaction().add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: CU_LIMIT }),
+      ix,
     );
-  }, [publicKey, connection]);
+
+    const sig = await sendTransaction(tx, connection, {
+      skipPreflight: true,
+    });
+    await connection.confirmTransaction(sig, 'confirmed');
+
+    // Refresh the portfolio store so the UI flips to Deposit/Withdraw.
+    await usePortfolioStore.getState().refresh();
+
+    return { sig };
+  }, [publicKey, sendTransaction, connection]);
 
   const deposit = useCallback(
     async (amount: bigint): Promise<AccountActionResult> => {

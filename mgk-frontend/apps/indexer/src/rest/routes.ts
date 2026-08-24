@@ -230,13 +230,19 @@ export async function batchRoutes(
 ): Promise<void> {
   let cachedLiveBatch: Record<string, unknown> | null = null;
   let cachedLiveBatchAt = 0;
+  const LIVE_BATCH_CACHE_MS = 1_000;
 
   app.get('/api/batch/current', async () => {
     const { connection, coreProgramId, registryAddress, getCurrentBatchAddress } = cfg;
 
     if (connection && coreProgramId) {
       const now = Date.now();
-      if (cachedLiveBatch && now - cachedLiveBatchAt < 30_000) {
+      const currentBatchAddress = getCurrentBatchAddress?.();
+      if (
+        cachedLiveBatch &&
+        now - cachedLiveBatchAt < LIVE_BATCH_CACHE_MS &&
+        (!currentBatchAddress || cachedLiveBatch.batchAddress === currentBatchAddress)
+      ) {
         return cachedLiveBatch;
       }
 

@@ -1,31 +1,23 @@
-import { PublicKey, clusterApiUrl } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
 
-// Devnet defaults — sourced from `.superstack/build-context.md` and
-// `programs/common/src/program_ids.rs`. The core, matcher, and oracle IDs
-// are the real deployed devnet pubkeys (see
-// `programs/perps-core/tests/lifecycle.rs:36-38`).
-//
-// 2026-06-16: matcher ID changed from the broken canonical
-// `9o2vTBBhEp6CYxNsDPsX79Euhzh8TtoLTSHR5R3jJebZ` (3 deploy txs finalized
-// but account never appeared on devnet) to
-// `AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF`. The old keypair is
-// backed up at /tmp/matcher-keypair-BROKEN-ID.json in case the canonical
-// ID is reclaimable later. Oracle deployed at
-// `6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA` (was System Program
-// placeholder).
-//
-// 2026-06-29: perps-core was fresh-deployed after closing CThnLgZ
-// because that account only held the stale 36-byte placeholder state.
+// Devnet defaults — M9 DFBA deploy (2026-08-06).
+// Program IDs match `programs/common/src/program_ids.rs`.
+// Registry/vault are core PDAs; book is a matcher-owned keypair account
+// (27_704 B BookState — CPI create is 10KB-capped, so client-side create).
+// See `docs/ai/deployment/2026-08-06-devnet-deploy-m9.md`.
 
 const DEVNET_DEFAULTS = {
-  rpcUrl: 'https://solana-devnet.infura.io/v3/0d6f71edfd764dae8eda71f95e3782ce',
-  coreProgramId: '3jYQ4mpWBBtwrzYQ4zzKhgqVcWWsG2HpXi9oXTBpekja',
-  matcherProgramId: 'AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF',
-  oracleProgramId: '6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA',
-  bookAddress: '5nfbjqTYpsnHnmCifdFpwLwajhyb8n6orVvbMbSrGT6w', // devnet matcher-owned keypair book (no InitializeBook instruction yet)
-  vaultAddress: '3FZS8JUn8FGz1CUroGYwrBVHqotaUquJMNnSuBCQxheT', // devnet core-owned keypair vault (Solana 4.x: PDA can't sign createAccount)
-  registryAddress: 'F7zWN2XrVqNDBBYqsYpgxHa6AuPK1aQE33kHwM4f8ayV', // devnet core-owned keypair registry (not PDA)
-  batchAddress: '', // current batch is keeper-created; prefer /api/batch/current unless explicitly overridden
+  rpcUrl: 'https://api.devnet.solana.com',
+  coreProgramId: 'C7w2mKz2KQgDroNNhACm9MutXhPiesVr9Gn2x8TDsRYx',
+  matcherProgramId: '7WiZuunbPGciCedsVTguvjezwwzrhmXG5HkdCuHizbNC',
+  oracleProgramId: 'CsSqVZMoXixNYstNhTtixeT4pyRgrYnXdpfoXQBgFPqZ',
+  // Matcher-owned keypair book (persisted at ~/.config/solana/mgk-book-keypair.json)
+  bookAddress: 'J33Y6yo6AZM6JKLEw89tN1kPmyEADqWWjGxb1aAW915j',
+  // Core PDAs (["vault"], ["registry"])
+  vaultAddress: '9qe7TkRxDXHo3dywPKiiY1jwSBnFuSPHmGTWhcP8ttXE',
+  registryAddress: 'CbsfrRS2rYE2qgJbi7MM6mLzARUy8cDiYmHW2o12jYJA',
+  // Prefer indexer /api/batch/current or PDA derive from registry counter
+  batchAddress: '',
   indexerUrl: 'http://localhost:4000',
   hermesUrl: 'https://hermes.pyth.network',
   // Pyth feed IDs (Hermes content-addressed, same across all networks)
@@ -77,7 +69,7 @@ export const config = {
   rpcUrl,
   coreProgramId,
   matcherProgramId,
-    oracleProgramId,
+  oracleProgramId,
   bookAddress,
   vaultAddress,
   registryAddress,

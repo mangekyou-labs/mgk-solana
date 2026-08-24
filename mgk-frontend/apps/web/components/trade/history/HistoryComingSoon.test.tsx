@@ -19,7 +19,7 @@ describe('HistoryComingSoon (4 placeholder tabs)', () => {
       Component: OrderHistory,
       testId: 'order-history',
       title: 'Order History',
-      descriptionSnippet: 'commit-reveal order',
+      descriptionSnippet: 'DFBA order',
     },
     {
       name: 'FundingHistory',

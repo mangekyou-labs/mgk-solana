@@ -37,11 +37,15 @@ function makeRegistryBuffer(
   return buf;
 }
 
-function makeBatchBuffer(batchId: bigint): Uint8Array {
-  const buf = new Uint8Array(120);
+function makeBatchBuffer(
+  batchId: bigint,
+  status: sdk.state.BatchStatus = sdk.state.BatchStatus.Committing,
+): Uint8Array {
+  // Full BATCH_SIZE (160) so resolveOpenBatch decode succeeds
+  const buf = new Uint8Array(sdk.state.BATCH_SIZE);
   const view = new DataView(buf.buffer);
   view.setBigUint64(0, batchId, true);
-  view.setUint8(8, sdk.state.BatchStatus.Committing);
+  view.setUint8(8, status);
   view.setBigUint64(16, 100_000n, true);
   view.setBigUint64(24, 100_100n, true);
   view.setBigUint64(32, 100_200n, true);
@@ -77,10 +81,7 @@ class MockConnection {
   async getMultipleAccountsInfo(
     keys: PublicKey[],
   ): Promise<(AccountInfo<Buffer> | null)[]> {
-    // Dispatch by PDA: the store always requests the Registry PDA
-    // first and the Batch PDA second; we can tell them apart by
-    // comparing the first requested key against REGISTRY_PDA and the
-    // expected batch PDA (derived from the queued batchIdCounter).
+    // Registry fetch still uses getMultipleAccountsInfo([registryPda]).
     const first = keys[0];
     if (first && first.equals(REGISTRY_PDA)) {
       this.registryCalls.push(keys);
@@ -95,6 +96,17 @@ class MockConnection {
       return [resp];
     }
     return keys.map(() => null);
+  }
+
+  // resolveOpenBatch uses getAccountInfo per candidate batch PDA.
+  async getAccountInfo(key: PublicKey): Promise<AccountInfo<Buffer> | null> {
+    if (this.expectedBatchPda && key.equals(this.expectedBatchPda)) {
+      this.batchCalls.push([key]);
+      const resp = this.batchResponses[this.batchIdx++] ?? null;
+      if (resp instanceof Error) throw resp;
+      return resp;
+    }
+    return null;
   }
 
   // Set by the test before each startPolling call: the Batch PDA the
@@ -161,6 +173,24 @@ describe('useBatchStore', () => {
     expect(conn.batchCalls.length).toBe(1);
   });
 
+  it('keeps a Clearing batch visible while the keeper runs the dual clear', async () => {
+    const conn = new MockConnection();
+    conn.expectedBatchPda = sdk.deriveBatchPda(41n, CORE_PK)[0];
+    conn.registryResponses = [makeAccountInfo(makeRegistryBuffer(42n))];
+    conn.batchResponses = [
+      makeAccountInfo(makeBatchBuffer(41n, sdk.state.BatchStatus.Clearing)),
+    ];
+
+    await useBatchStore.getState().startPolling(
+      buildParams(conn as unknown as Connection, { intervalMs: 50 }),
+    );
+
+    const state = useBatchStore.getState();
+    expect(state.data?.batchId).toBe(41n);
+    expect(state.data?.status).toBe(sdk.state.BatchStatus.Clearing);
+    expect(state.error).toBeNull();
+  });
+
   it('handles batchIdCounter=0 (no batches created yet) — no batch fetch, no error', async () => {
     const conn = new MockConnection();
     conn.registryResponses = [makeAccountInfo(makeRegistryBuffer(0n))];
@@ -224,11 +254,35 @@ describe('useBatchStore', () => {
     expect(state.loading).toBe(false);
   });
 
-  it('captures errors from decodeBatch (truncated buffer)', async () => {
+  it('preserves the last batch during a transient batch RPC failure', async () => {
+    const conn = new MockConnection();
+    conn.expectedBatchPda = sdk.deriveBatchPda(10n, CORE_PK)[0];
+    conn.registryResponses = [
+      makeAccountInfo(makeRegistryBuffer(11n)),
+      makeAccountInfo(makeRegistryBuffer(11n)),
+    ];
+    conn.batchResponses = [
+      makeAccountInfo(makeBatchBuffer(10n)),
+      new Error('429 Too Many Requests'),
+    ];
+
+    await useBatchStore.getState().startPolling(
+      buildParams(conn as unknown as Connection, { intervalMs: 50 }),
+    );
+    await useBatchStore.getState().refresh();
+
+    const state = useBatchStore.getState();
+    expect(state.data?.batchId).toBe(10n);
+    expect(state.currentBatchId).toBe(10n);
+    expect(state.error).toMatch(/429/);
+    expect(state.loading).toBe(false);
+  });
+
+  it('skips truncated batch accounts and surfaces no open batch (no error)', async () => {
     const conn = new MockConnection();
     conn.expectedBatchPda = sdk.deriveBatchPda(2n, CORE_PK)[0];
     conn.registryResponses = [makeAccountInfo(makeRegistryBuffer(3n))];
-    const short = new Uint8Array(64); // < BATCH_SIZE
+    const short = new Uint8Array(64); // < BATCH_SIZE — resolveOpenBatch skips
     conn.batchResponses = [makeAccountInfo(short)];
 
     await useBatchStore.getState().startPolling(
@@ -236,8 +290,10 @@ describe('useBatchStore', () => {
     );
 
     const state = useBatchStore.getState();
+    // No Collecting batch in the scan window → idle, not a hard error
     expect(state.data).toBeNull();
-    expect(state.error).toMatch(/buffer too small/);
+    expect(state.error).toBeNull();
+    expect(state.currentBatchId).toBe(2n);
   });
 
   it('fires a refresh on every interval tick (Registry + Batch each tick)', async () => {

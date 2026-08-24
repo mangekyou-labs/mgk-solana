@@ -1,0 +1,113 @@
+# Render Blueprint for MGK DFBA devnet infrastructure
+# https://render.com/docs/blueprint-spec
+#
+# Services:
+#   mgk-indexer  — read-only sync/API (Node 22, SQLite disk, no embedded writer)
+#   mgk-keeper   — batch lifecycle cranker (Node 22 background worker)
+#   mgk-oracle   — price oracle publisher (Node 22 background worker)
+#
+# ⚠️  Keepers and oracles have autoDeploy: false to prevent uncontrolled cutovers.
+
+services:
+  # -----------------------------------------------------------------------
+  # Indexer — read-only sync/API service
+  # -----------------------------------------------------------------------
+  - name: mgk-indexer
+    type: web
+    runtime: node
+    plan: starter
+    region: oregon
+    healthCheckPath: /api/healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: RPC_URL
+        sync: false  # set in Render dashboard
+      - key: CORE_PROGRAM_ID
+        value: "C7w2mKz2KQgDroNNhACm9MutXhPiesVr9Gn2x8TDsRYx"
+      - key: MATCHER_PROGRAM_ID
+        value: "7WiZuunbPGciCedsVTguvjezwwzrhmXG5HkdCuHizbNC"
+      - key: REGISTRY_ADDRESS
+        sync: false  # set in Render dashboard
+      - key: BATCH_ADDRESS
+        sync: false  # set in Render dashboard after keeper starts
+      - key: BOOK_ADDRESS
+        sync: false  # set in Render dashboard
+      - key: DB_PATH
+        value: "/var/data/mgk-indexer.db"
+      - key: PORT
+        value: "4000"
+      - key: LOG_LEVEL
+        value: "info"
+      - key: BACKFILL_SLOTS
+        value: "1000"
+    disk:
+      name: indexer-data
+      mountPath: /var/data
+      sizeGB: 1
+    buildCommand: cd mgk-frontend && pnpm install --filter @mgk/indexer --frozen-lockfile && pnpm -F @mgk/indexer build
+    startCommand: cd mgk-frontend && node apps/indexer/dist/main.js
+
+  # -----------------------------------------------------------------------
+  # Keeper — batch lifecycle background worker (no HTTP server)
+  # -----------------------------------------------------------------------
+  - name: mgk-keeper
+    type: worker
+    runtime: node
+    plan: starter
+    region: oregon
+    autoDeploy: false  # manual cutover only
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: RPC_URL
+        sync: false  # set in Render dashboard
+      - key: KEEPER_KEYPAIR
+        sync: false  # mounted as Render secret file
+      - key: BOOK_ADDRESS
+        sync: false  # set in Render dashboard
+      - key: PORTFOLIO_ADDRESSES
+        value: ""  # optional; keeper discovers dynamically
+      - key: INTERVAL
+        value: "5000"
+      - key: MAX_CONSECUTIVE_ERRORS
+        value: "5"
+      - key: LOG_LEVEL
+        value: "info"
+    buildCommand: cd tools && npm install @solana/web3.js
+    startCommand: node tools/ops-keeper.js --loop --interval 5000
+
+  # -----------------------------------------------------------------------
+  # Oracle — price oracle background worker (no HTTP server)
+  # -----------------------------------------------------------------------
+  - name: mgk-oracle
+    type: worker
+    runtime: node
+    plan: starter
+    region: oregon
+    autoDeploy: false  # manual cutover only
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: RPC_URL
+        sync: false  # set in Render dashboard
+      - key: ORACLE_AUTHORITY_KEYPAIR
+        sync: false  # mounted as Render secret file
+      - key: PRICE_ORACLE_ADDRESS
+        value: "5NSDGAaRqfxe6mkZG9fEAZdzK4r77nEBEobohZGYP6PN"
+      - key: INSTRUMENT_ADDRESS
+        value: "Hz9UtmSXyKFnp1pGvrhrAmizMsvEkYRh5Eih1r7Lf1hG"
+      - key: ORACLE_PROGRAM_ID
+        value: "CsSqVZMoXixNYstNhTtixeT4pyRgrYnXdpfoXQBgFPqZ"
+      - key: QUORUM_VENUES
+        value: "binance,okx,bybit"
+      - key: ORACLE_LOOP_INTERVAL
+        value: "10000"
+      - key: MAX_FRESHNESS_SEC
+        value: "30"
+      - key: MAX_DEVIATION_BPS
+        value: "50"
+      - key: LOG_LEVEL
+        value: "info"
+    buildCommand: cd tools && npm install @solana/web3.js
+    startCommand: node tools/ops-oracle.js --loop

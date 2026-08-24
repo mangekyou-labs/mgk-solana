@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { describe, expect, it, beforeEach } from 'vitest';
-import { useOrderFormStore } from './useOrderFormStore';
+import {
+  recoverOrderFormState,
+  useOrderFormStore,
+} from './useOrderFormStore';
 
 describe('useOrderFormStore', () => {
   beforeEach(() => {
@@ -46,12 +49,12 @@ describe('useOrderFormStore', () => {
     expect(state.status).toBe('idle');
   });
 
-  it('setStatus updates the order status', () => {
-    useOrderFormStore.getState().setStatus('committing');
-    expect(useOrderFormStore.getState().status).toBe('committing');
+  it('setStatus updates DFBA order statuses', () => {
+    useOrderFormStore.getState().setStatus('submitting');
+    expect(useOrderFormStore.getState().status).toBe('submitting');
 
-    useOrderFormStore.getState().setStatus('awaiting_reveal');
-    expect(useOrderFormStore.getState().status).toBe('awaiting_reveal');
+    useOrderFormStore.getState().setStatus('failed');
+    expect(useOrderFormStore.getState().status).toBe('failed');
 
     useOrderFormStore.getState().setStatus('done');
     expect(useOrderFormStore.getState().status).toBe('done');
@@ -121,9 +124,8 @@ describe('useOrderFormStore', () => {
     expect(window.localStorage.getItem('mgk-order-form')).toBeNull();
   });
 
-  it('loads persisted state from localStorage on creation', () => {
-    window.localStorage.setItem(
-      'mgk-order-form',
+  it('recovers persisted failed DFBA state', () => {
+    const recovered = recoverOrderFormState(
       JSON.stringify({
         instrumentId: 0,
         side: 'sell',
@@ -133,17 +135,39 @@ describe('useOrderFormStore', () => {
         batchId: '5',
         salt: '7',
         hash: 'cafe',
-        status: 'awaiting_reveal',
+        isMaker: false,
+        status: 'failed',
       }),
     );
+    expect(recovered).not.toBeNull();
+    expect(recovered!.status).toBe('failed');
+    expect(recovered!.side).toBe('sell');
+    expect(recovered!.price).toBe(999_000_000n);
+  });
 
-    // Force re-create by clearing and reloading — but we can't truly
-    // re-create a Zustand store module. Instead, test that deserialization
-    // of the raw localStorage value would produce the expected shape.
-    const raw = window.localStorage.getItem('mgk-order-form');
-    const parsed = JSON.parse(raw!);
-    expect(parsed.status).toBe('awaiting_reveal');
-    expect(parsed.side).toBe('sell');
-    expect(parsed.price).toBe('999000000');
+  it('drops persisted slashed and commit-reveal statuses', () => {
+    for (const status of [
+      'slashed',
+      'committing',
+      'awaiting_reveal',
+      'revealing',
+    ] as const) {
+      expect(
+        recoverOrderFormState(
+          JSON.stringify({
+            instrumentId: 0,
+            side: 'buy',
+            price: '1',
+            qty: '1',
+            reduceOnly: false,
+            batchId: '1',
+            salt: '0',
+            hash: '',
+            isMaker: false,
+            status,
+          }),
+        ),
+      ).toBeNull();
+    }
   });
 });

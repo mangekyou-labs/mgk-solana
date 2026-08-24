@@ -1,10 +1,9 @@
 import { render, screen } from '@testing-library/react';
 import { vi } from 'vitest';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { Connection } from '@solana/web3.js';
 
 import TradePage from './page';
 
-const MOCK_PUBKEY = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 
 vi.mock('@solana/wallet-adapter-react', () => ({
   useWallet: vi.fn(),

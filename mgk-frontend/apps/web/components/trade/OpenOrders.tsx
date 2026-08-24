@@ -197,19 +197,29 @@ function OrderRow({
   const remaining = order.qty - order.filledQty;
   const [editing, setEditing] = useState(false);
   const [editQty, setEditQty] = useState('');
+  const [editError, setEditError] = useState<string | null>(null);
   const remainingStr = (Number(remaining) / 1_000_000).toString();
 
   const handleModifySubmit = () => {
     const parsed = parseFloat(editQty);
-    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setEditError('Enter a quantity greater than 0.');
+      return;
+    }
     const newQty = BigInt(Math.round(parsed * 1_000_000));
+    if (newQty <= 0n) {
+      setEditError('Quantity is below the minimum precision.');
+      return;
+    }
     if (newQty === order.qty) {
       setEditing(false);
+      setEditError(null);
       return;
     }
     onModify(order.orderId, newQty);
     setEditing(false);
     setEditQty('');
+    setEditError(null);
   };
 
   return (
@@ -232,16 +242,28 @@ function OrderRow({
             value={editQty}
             onChange={(e) => {
               const v = e.target.value;
-              if (v === '' || /^\d*\.?\d*$/.test(v)) setEditQty(v);
+              if (v === '' || /^\d*\.?\d*$/.test(v)) {
+                setEditQty(v);
+                setEditError(null);
+              }
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleModifySubmit();
-              if (e.key === 'Escape') setEditing(false);
+              if (e.key === 'Escape') {
+                setEditing(false);
+                setEditError(null);
+              }
             }}
+            aria-invalid={editError !== null}
             placeholder={remainingStr}
             className="w-full rounded border border-accent/40 bg-surface-2 px-1 py-0.5 text-right text-text text-xs outline-none"
             autoFocus
           />
+          {editError && (
+            <span data-testid="open-order-modify-error" className="text-bear text-[10px]">
+              {editError}
+            </span>
+          )}
         </div>
       ) : (
         <span data-testid="open-order-qty" className="text-text min-w-[60px] text-right">
@@ -262,7 +284,10 @@ function OrderRow({
           </button>
           <button
             data-testid="open-order-modify-cancel-edit"
-            onClick={() => setEditing(false)}
+            onClick={() => {
+              setEditing(false);
+              setEditError(null);
+            }}
             className="text-text-muted text-[10px] uppercase tracking-wider hover:underline"
           >
             Cancel

@@ -21,7 +21,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: 'mgk — On-chain perps',
-  description: 'On-chain perpetual futures with commit-reveal CLOB. Devnet.',
+  description: 'On-chain perpetual futures with dual-flow batch auctions (DFBA). Devnet.',
 };
 
 export default function RootLayout({

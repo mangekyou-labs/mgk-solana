@@ -830,27 +830,6 @@ mod tests {
         assert_eq!(state.book.best_bid, 90);
     }
 
-    /// Test-only risk callback. Reads the breach cap from a shared static
-    /// atomic that each test sets via `risk_breach_after(cap)`. Production
-    /// would pass the user's portfolio context through the CPI instruction
-    /// data instead.
-    use core::sync::atomic::{AtomicU64, Ordering};
-    static RISK_CAP: AtomicU64 = AtomicU64::new(u64::MAX);
-
-    fn risk_breach_after(cap: u64) -> RiskCheckFn {
-        RISK_CAP.store(cap, Ordering::SeqCst);
-        risk_breach_callback
-    }
-
-    fn risk_breach_callback(ctx: &RiskContext) -> RiskDecision {
-        let cap = RISK_CAP.load(Ordering::SeqCst);
-        if ctx.cumulative_notional > cap as u128 {
-            RiskDecision::Cancel
-        } else {
-            RiskDecision::Continue
-        }
-    }
-
     #[test]
     fn test_risk_breach_cancels_remainder() {
         // Two asks at the same price: total 10 qty. Buyer wants 10.
@@ -870,8 +849,13 @@ mod tests {
         .unwrap();
         let buy = make_order(3, Side::Buy, 100, 10, OrderType::LimitIOC);
         let queues = partition_with(&[buy]);
-        let risk = risk_breach_after(499);
-        let result = clob_match_with_risk(&mut state, &queues, risk);
+        let result = clob_match_with_risk(&mut state, &queues, |ctx| {
+            if ctx.cumulative_notional > 499 {
+                RiskDecision::Cancel
+            } else {
+                RiskDecision::Continue
+            }
+        });
 
         // 5 qty filled (taker side). One maker fill.
         let taker_qty: u64 = result.fills[..result.fill_count]
@@ -893,8 +877,13 @@ mod tests {
         let mut state = seed_book_with_ask(1, 100, 5);
         let buy = make_order(2, Side::Buy, 100, 5, OrderType::LimitIOC);
         let queues = partition_with(&[buy]);
-        let risk = risk_breach_after(u64::MAX);
-        let result = clob_match_with_risk(&mut state, &queues, risk);
+        let result = clob_match_with_risk(&mut state, &queues, |ctx| {
+            if ctx.cumulative_notional > u64::MAX as u128 {
+                RiskDecision::Cancel
+            } else {
+                RiskDecision::Continue
+            }
+        });
 
         let taker_qty: u64 = result.fills[..result.fill_count]
             .iter()

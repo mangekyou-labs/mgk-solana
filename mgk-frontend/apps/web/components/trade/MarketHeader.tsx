@@ -6,58 +6,52 @@ import { Pill } from '@/components/common/Pill';
 import { NumberDisplay } from '@/components/common/NumberDisplay';
 import { useBookTopN } from '@/lib/stores/useBookStore';
 import { useBatchPolling } from '@/lib/stores/useBatchStore';
+import { useIndexerHealth } from '@/lib/stores/useIndexerHealthStore';
 import { useMarketStatePolling } from '@/lib/stores/useMarketStateStore';
 import { useSlotPolling } from '@/lib/stores/useSlotPolling';
 import {
   PHASE_LABEL,
   PHASE_TONE,
-  formatBatchCountdown,
+  describeBatchPhase,
 } from '@/lib/trade/batchDisplay';
 
-/**
- * MarketHeader — the 48px strip between the page header and the
- * 3-column body. Shows: market selector, last price (book midpoint in
- * v1), and a stats row (Last / Oracle / 24h Volume / Open Interest /
- * Batch phase + countdown).
- *
- * Drift from plan:
- * - "Last" is the book midpoint (best bid + best ask) / 2, with a "Mid"
- *   badge. There is no on-chain "last trade" PDA in v1; the on-chain
- *   mgk matcher just clears, no fill history is kept.
- * - "Oracle" shows "—" with a tooltip — the deployed `percolator-oracle`
- *   has no initialized data account on devnet yet (the keeper bot is
- *   not running). T5+ will fill this in when a real oracle is wired.
- * - "24h Vol" and "OI" are now sourced from the indexer's
- *   `market_state` table via `useMarketStatePolling` (M7 T7.3). When
- *   the indexer is offline or the market is not yet registered, the
- *   slots fall back to "—" with a tooltip pointing at the indexer.
- */
+function formatAsOf(ts: number | null): string {
+  if (ts === null) return '';
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return 'just now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  return `${Math.floor(diff / 3_600_000)}h ago`;
+}
+
 export function MarketHeader() {
   const { bids, asks } = useBookTopN(0);
   const { data: batchData, registry } = useBatchPolling(3000);
   const { slot: currentSlot } = useSlotPolling(1000);
   const marketState = useMarketStatePolling(0, 5000);
+  const indexerHealth = useIndexerHealth();
+  const isIndexerStale = indexerHealth.status === 'degraded' || indexerHealth.status === 'critical';
 
   // Book midpoint: (best bid + best ask) / 2. Best bid is max, best
   // ask is min. Empty book → null.
-  const midpoint = useMemo(() => {
+  const { midpoint, bookCrossed } = useMemo(() => {
     const bestBid = bids[0]?.price;
     const bestAsk = asks[0]?.price;
-    if (bestBid == null || bestAsk == null) return null;
-    return (bestBid + bestAsk) / 2n;
+    if (bestBid == null || bestAsk == null) {
+      return { midpoint: null, bookCrossed: false };
+    }
+    if (bestBid > bestAsk) {
+      return { midpoint: null, bookCrossed: true };
+    }
+    return { midpoint: (bestBid + bestAsk) / 2n, bookCrossed: false };
   }, [bids, asks]);
 
-  const phasePill = useMemo(() => {
+  const phasePresentation = useMemo(() => {
     if (!batchData) return null;
     return {
       label: PHASE_LABEL[batchData.status],
       tone: PHASE_TONE[batchData.status],
+      intent: describeBatchPhase(batchData.status, batchData, currentSlot, registry),
     };
-  }, [batchData]);
-
-  const countdown = useMemo(() => {
-    if (!batchData) return '—';
-    return formatBatchCountdown(batchData.status, batchData, currentSlot, registry);
   }, [batchData, currentSlot, registry]);
 
   // OI = long + short. Indexer hasn't run yet → null.
@@ -66,6 +60,10 @@ export function MarketHeader() {
     : null;
   const volume24h = marketState.data?.volume_24h ?? null;
   const indexerLive = marketState.isPolling && marketState.data != null;
+
+  // As-of timestamp from market state
+  const asOfTs = marketState.data?.updated_ts ?? null;
+  const asOfLabel = isIndexerStale && asOfTs ? formatAsOf(asOfTs) : null;
 
   return (
     <div
@@ -103,9 +101,18 @@ export function MarketHeader() {
             >
               —
             </span>
-            <span className="text-[10px] uppercase tracking-wider text-text-faint">
-              awaiting first fill
-            </span>
+            {bookCrossed ? (
+              <span
+                className="text-[10px] uppercase tracking-wider text-text-faint"
+                data-testid="last-price-crossed"
+              >
+                book crossed
+              </span>
+            ) : (
+              <span className="text-[10px] uppercase tracking-wider text-text-faint">
+                awaiting first fill
+              </span>
+            )}
           </>
         )}
       </div>
@@ -117,17 +124,23 @@ export function MarketHeader() {
       <Stat
         label="Last"
         value={midpoint != null ? <NumberDisplay value={midpoint} kind="scaled-usd" decimals={2} /> : '—'}
-        tooltip="Book midpoint (best bid + best ask) / 2"
+        tooltip={
+          bookCrossed
+            ? 'Book is crossed; midpoint is unavailable until the next clear.'
+            : 'Book midpoint (best bid + best ask) / 2'
+        }
       />
 
       <Stat
         label="Oracle"
         value="—"
-        tooltip="On-chain percolator-oracle is deployed but the keeper bot is not yet running. M5 will fill this in."
+        tooltip="The on-chain oracle feed is deployed, but its value is not surfaced in the v1 header yet."
       />
 
       <Stat
         label="24h Vol"
+        isStale={isIndexerStale && volume24h != null}
+        asOf={asOfLabel}
         value={
           volume24h != null ? (
             <NumberDisplay value={volume24h} kind="scaled-base" decimals={2} />
@@ -136,14 +149,18 @@ export function MarketHeader() {
           )
         }
         tooltip={
-          indexerLive
-            ? `From indexer /api/markets/0/state (sum of candles_1m over the last 24h, recomputed every 60s).`
-            : 'Available when the indexer is live (M4). Start it with `pnpm -F indexer dev`.'
+          isIndexerStale && volume24h != null
+            ? 'Indexer is delayed / offline; displayed 24h volume is cached and may be stale.'
+            : indexerLive
+              ? `From indexer /api/markets/0/state (sum of candles_1m over the last 24h, recomputed every 60s).`
+              : 'Available when the indexer is live (M4). Start it with `pnpm -F indexer dev`.'
         }
       />
 
       <Stat
         label="OI"
+        isStale={isIndexerStale && oi != null}
+        asOf={asOfLabel}
         value={
           oi != null ? (
             <NumberDisplay value={oi} kind="scaled-base" decimals={2} />
@@ -152,23 +169,30 @@ export function MarketHeader() {
           )
         }
         tooltip={
-          indexerLive
-            ? `From indexer /api/markets/0/state. Long ${marketState.data?.open_interest_long.toLocaleString()} + Short ${marketState.data?.open_interest_short.toLocaleString()}.`
-            : 'Available when the indexer is live (M4). Start it with `pnpm -F indexer dev`.'
+          isIndexerStale && oi != null
+            ? 'Indexer is delayed / offline; displayed open interest is cached and may be stale.'
+            : indexerLive
+              ? `From indexer /api/markets/0/state. Long ${marketState.data?.open_interest_long.toLocaleString()} + Short ${marketState.data?.open_interest_short.toLocaleString()}.`
+              : 'Available when the indexer is live (M4). Start it with `pnpm -F indexer dev`.'
         }
       />
 
       <span className="h-5 w-px bg-border" aria-hidden="true" />
 
       {/* Batch phase + countdown */}
-      {phasePill ? (
-        <div className="flex items-center gap-2" data-testid="market-header-batch">
-          <Pill tone={phasePill.tone}>Batch: {phasePill.label}</Pill>
+      {phasePresentation ? (
+        <div className="flex min-w-0 items-center gap-2" data-testid="market-header-batch">
+          <Pill tone={phasePresentation.tone}>Batch: {phasePresentation.label}</Pill>
           <span
-            className="font-mono text-xs tabular-nums text-text"
-            data-testid="market-header-countdown"
+            className="flex min-w-0 items-center gap-1 whitespace-nowrap font-mono text-[11px]"
+            data-testid="market-header-intent"
+            title={`${phasePresentation.intent.headline} · ${phasePresentation.intent.detail}`}
           >
-            {countdown}
+            <span className="text-text">{phasePresentation.intent.headline}</span>
+            <span className="text-text-faint" aria-hidden="true">{' · '}</span>
+            <span className="truncate text-text-muted">
+              {phasePresentation.intent.detail}
+            </span>
           </span>
         </div>
       ) : (
@@ -182,10 +206,14 @@ function Stat({
   label,
   value,
   tooltip,
+  isStale,
+  asOf,
 }: {
   label: string;
   value: React.ReactNode;
   tooltip?: string;
+  isStale?: boolean;
+  asOf?: string | null;
 }) {
   return (
     <div
@@ -193,10 +221,29 @@ function Stat({
       data-testid={`stat-${label.toLowerCase().replace(/\s+/g, '-')}`}
       title={tooltip}
     >
-      <span className="text-[10px] uppercase tracking-wider text-text-faint">
-        {label}
+      <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-text-faint">
+        <span>{label}</span>
+        {isStale ? (
+          <span
+            data-testid={`stat-stale-${label.toLowerCase().replace(/\s+/g, '-')}`}
+            className="text-warn text-[9px] font-mono lowercase tracking-normal"
+            title="Indexer data is stale"
+          >
+            (stale)
+          </span>
+        ) : null}
       </span>
-      <span className="font-mono text-xs tabular-nums text-text">{value}</span>
+      <span className="font-mono text-xs tabular-nums text-text">
+        {value}
+        {asOf ? (
+          <span
+            data-testid={`stat-asof-${label.toLowerCase().replace(/\s+/g, '-')}`}
+            className="ml-1 text-[9px] text-text-faint font-mono"
+          >
+            as of {asOf}
+          </span>
+        ) : null}
+      </span>
     </div>
   );
 }

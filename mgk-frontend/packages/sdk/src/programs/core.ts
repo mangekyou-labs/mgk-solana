@@ -29,6 +29,27 @@ export const CORE_INSTRUCTION = {
   SetBatchCounter: 17,
   CreatePortfolio: 18,
   InitPortfolioForUser: 19,
+  /** DFBA single-tx open post (replaces Commit+Reveal). */
+  PostOrder: 20,
+  /** Governance-only: update batch parameters. */
+  SetBatchParams: 21,
+  /** Governance-only: retune instrument taker/maker fees. */
+  SetInstrumentFees: 22,
+  /** Governance-only: bind instrument to price oracle account. */
+  SetInstrumentOracle: 23,
+  /** Governance-only: update D7 funding parameters. */
+  SetFundingParams: 24,
+} as const;
+
+/** Matcher program discriminators (perps-matcher entrypoint). */
+export const MATCHER_INSTRUCTION = {
+  ComputeClearing: 0,
+  CancelResting: 1,
+  ModifyResting: 2,
+  ClearAndMatch: 3,
+  CancelAll: 4,
+  DfbaClear: 5,
+  PlaceResting: 6,
 } as const;
 export type CoreInstruction =
   (typeof CORE_INSTRUCTION)[keyof typeof CORE_INSTRUCTION];
@@ -139,9 +160,77 @@ export function encodeRevealOrder(params: RevealOrderParams): Uint8Array {
 /**
  * CloseCommitting — discriminator only, no extra data.
  * Wire format: disc(1) + (nothing) = 1 byte.
+ * DFBA: transitions Committing → Clearing (skips reveal).
  */
 export function encodeCloseCommitting(): Uint8Array {
   return new Uint8Array([CORE_INSTRUCTION.CloseCommitting]);
+}
+
+export interface PostOrderParams {
+  side: Side;
+  /** false = taker (default), true = maker */
+  isMaker?: boolean;
+  price: bigint;
+  qty: bigint;
+  instrumentId: number;
+  reduceOnly?: boolean;
+}
+
+/**
+ * PostOrder (disc 20) — DFBA open limit post.
+ * Wire: disc(1) + side(1) + is_maker(1) + price(8) + qty(8) + instrument_id(2) + reduce_only(1) = 22
+ */
+export function encodePostOrder(params: PostOrderParams): Uint8Array {
+  const buf = new Uint8Array(22);
+  const view = new DataView(buf.buffer);
+  view.setUint8(0, CORE_INSTRUCTION.PostOrder);
+  view.setUint8(1, params.side);
+  view.setUint8(2, params.isMaker ? 1 : 0);
+  view.setBigInt64(3, params.price, true);
+  view.setBigUint64(11, params.qty, true);
+  view.setUint16(19, params.instrumentId, true);
+  view.setUint8(21, params.reduceOnly ? 1 : 0);
+  return buf;
+}
+
+/**
+ * Matcher DfbaClear (disc 5).
+ * Wire: disc(1) + marginal_size_cap(8) + num_orders(2) [=0 → collect from book]
+ * Optional trailing orders if num_orders > 0 (not encoded here for keeper path).
+ */
+export function encodeDfbaClear(marginalSizeCap: bigint = BigInt('0xFFFFFFFFFFFFFFFF')): Uint8Array {
+  const buf = new Uint8Array(11);
+  const view = new DataView(buf.buffer);
+  view.setUint8(0, MATCHER_INSTRUCTION.DfbaClear);
+  view.setBigUint64(1, marginalSizeCap, true);
+  view.setUint16(9, 0, true); // collect from book
+  return buf;
+}
+
+/**
+ * Matcher PlaceResting (disc 6) — usually invoked via Core PostOrder CPI.
+ * Wire: disc(1) + user(32) + side(1) + is_maker(1) + price(8) + qty(8) + instrument_id(2) + reduce_only(1) = 54
+ */
+export function encodePlaceResting(
+  user: Uint8Array,
+  side: Side,
+  isMaker: boolean,
+  price: bigint,
+  qty: bigint,
+  instrumentId: number,
+  reduceOnly = false,
+): Uint8Array {
+  const buf = new Uint8Array(54);
+  const view = new DataView(buf.buffer);
+  view.setUint8(0, MATCHER_INSTRUCTION.PlaceResting);
+  buf.set(user.subarray(0, 32), 1);
+  view.setUint8(33, side);
+  view.setUint8(34, isMaker ? 1 : 0);
+  view.setBigInt64(35, price, true);
+  view.setBigUint64(43, qty, true);
+  view.setUint16(51, instrumentId, true);
+  view.setUint8(53, reduceOnly ? 1 : 0);
+  return buf;
 }
 
 /**
@@ -179,14 +268,16 @@ export function encodeSettleBatch(
 }
 
 /**
- * LiquidateUser — discriminator + num_oracles (u16), 3 bytes total.
- * Wire format: disc(1) + num_oracles(2) = 3.
+ * LiquidateUser — discriminator + num_instruments (u16), 3 bytes total.
+ * Wire: disc(1) + num_instruments(2).
+ * Accounts: portfolio, registry, vault, liquidator, **batch** (Settled + mark_valid),
+ * instruments…, oracle. Rejects when batch.liq_paused or !mark_valid (DFBA).
  */
-export function encodeLiquidateUser(numOracles: number): Uint8Array {
+export function encodeLiquidateUser(numInstruments: number): Uint8Array {
   const buf = new Uint8Array(3);
   const view = new DataView(buf.buffer);
   view.setUint8(0, CORE_INSTRUCTION.LiquidateUser);
-  view.setUint16(1, numOracles, true);
+  view.setUint16(1, numInstruments, true);
   return buf;
 }
 
@@ -328,5 +419,47 @@ export function encodeInitPortfolioForUser(user: Uint8Array): Uint8Array {
   const buf = new Uint8Array(33);
   buf[0] = CORE_INSTRUCTION.InitPortfolioForUser;
   buf.set(user, 1);
+  return buf;
+}
+
+/**
+ * SetInstrumentFees (disc 22) — governance retune of taker/maker fees.
+ * Wire: disc(1) + taker_fee_bps(u16 LE) + maker_fee_bps(i16 LE) = 5
+ */
+export function encodeSetInstrumentFees(
+  takerFeeBps: number,
+  makerFeeBps: number,
+): Uint8Array {
+  const buf = new Uint8Array(5);
+  const view = new DataView(buf.buffer);
+  view.setUint8(0, CORE_INSTRUCTION.SetInstrumentFees);
+  view.setUint16(1, takerFeeBps, true);
+  view.setInt16(3, makerFeeBps, true);
+  return buf;
+}
+
+/**
+ * SetInstrumentOracle (disc 23) — governance-only instrument oracle binding.
+ * Wire: disc(1) = 1 byte.
+ */
+export function encodeSetInstrumentOracle(): Uint8Array {
+  return new Uint8Array([CORE_INSTRUCTION.SetInstrumentOracle]);
+}
+
+/**
+ * SetFundingParams (disc 24) — governance-only D7 funding parameter update.
+ * Wire: disc(1) + coefficient_bps(i64 LE) + max_rate_bps(i64 LE) + interval_slots(u64 LE) = 25
+ */
+export function encodeSetFundingParams(
+  coefficientBps: number,
+  maxRateBps: number,
+  intervalSlots: number,
+): Uint8Array {
+  const buf = new Uint8Array(25);
+  const view = new DataView(buf.buffer);
+  view.setUint8(0, CORE_INSTRUCTION.SetFundingParams);
+  view.setBigInt64(1, BigInt(coefficientBps), true);
+  view.setBigInt64(9, BigInt(maxRateBps), true);
+  view.setBigUint64(17, BigInt(intervalSlots), true);
   return buf;
 }

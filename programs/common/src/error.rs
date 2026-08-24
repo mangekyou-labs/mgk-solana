@@ -73,6 +73,28 @@ pub enum MgkError {
     RevealDeadlineExpired = 600,
     InstrumentMissingForLiquidation = 601,
     OperationPaused = 602,
+    // DFBA-specific errors (603–609) — M9
+    /// Orders exceed `max_orders_per_batch` (T9.0.3).
+    DfbaCapExceeded = 603,
+    /// Liquidation requires a valid dual-clear mark (T9.0.3).
+    MarkInvalidForLiquidation = 604,
+    /// Batch must be Settled before this operation (T9.0.3).
+    BatchNotSettled = 605,
+    /// T9.10.7: Reduce-only order violates position constraints.
+    /// Flat position, wrong side, or qty exceeds absolute position.
+    ReduceOnlyViolation = 606,
+}
+
+impl From<MgkError> for u64 {
+    fn from(e: MgkError) -> u64 {
+        e as u64
+    }
+}
+
+impl From<MgkError> for pinocchio::program_error::ProgramError {
+    fn from(e: MgkError) -> Self {
+        pinocchio::program_error::ProgramError::from(e as u64)
+    }
 }
 
 #[cfg(test)]
@@ -86,16 +108,18 @@ mod tests {
     fn test_operation_paused_error_pinned_to_perps_core_range() {
         assert_eq!(MgkError::OperationPaused as u32, 602);
     }
-}
 
-impl From<MgkError> for u64 {
-    fn from(e: MgkError) -> u64 {
-        e as u64
+    /// Pin the M9 DFBA error discriminators.
+    #[test]
+    fn test_dfba_error_codes_pinned() {
+        assert_eq!(MgkError::DfbaCapExceeded as u32, 603);
+        assert_eq!(MgkError::MarkInvalidForLiquidation as u32, 604);
+        assert_eq!(MgkError::BatchNotSettled as u32, 605);
     }
-}
 
-impl From<MgkError> for pinocchio::program_error::ProgramError {
-    fn from(e: MgkError) -> Self {
-        pinocchio::program_error::ProgramError::from(e as u64)
+    /// T9.10.7: Pin the ReduceOnlyViolation discriminator.
+    #[test]
+    fn test_reduce_only_violation_pinned() {
+        assert_eq!(MgkError::ReduceOnlyViolation as u32, 606);
     }
 }

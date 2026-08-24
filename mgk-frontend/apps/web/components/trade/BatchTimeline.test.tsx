@@ -47,6 +47,12 @@ function makeBatchData(
     totalNotional: 0n,
     slashedDeposits: 0n,
     bump: 255,
+    bidClearingPrice: 0n,
+    askClearingPrice: 0n,
+    matchedBidQty: 0n,
+    matchedAskQty: 0n,
+    markValid: false,
+    liqPaused: true,
   };
 }
 
@@ -132,7 +138,7 @@ describe('<BatchTimeline />', () => {
     expect(screen.queryByTestId('crank-button')).not.toBeInTheDocument();
   });
 
-  it('renders the Committing phase pill + countdown', () => {
+  it('renders the Collecting phase pill + countdown', () => {
     resetMockState({
       data: makeBatchData(sdk.state.BatchStatus.Committing, { commitDeadlineSlot: 100_000n }),
       currentBatchId: 7n,
@@ -140,19 +146,19 @@ describe('<BatchTimeline />', () => {
     });
     render(<BatchTimeline />);
     const root = screen.getByTestId('batch-timeline');
-    expect(root).toHaveAttribute('data-state', 'committing');
-    expect(screen.getByText(/Batch:\s*Committing/i)).toBeInTheDocument();
+    expect(root).toHaveAttribute('data-state', 'collecting');
+    expect(screen.getByText(/Batch:\s*Collecting/i)).toBeInTheDocument();
     expect(screen.getByTestId('batch-countdown')).toHaveTextContent('00:01:40');
   });
 
-  it('renders the Revealing phase pill with accent tone', () => {
+  it('renders the Closed label for legacy reveal wire value', () => {
     resetMockState({
       data: makeBatchData(sdk.state.BatchStatus.Revealing, { revealDeadlineSlot: 100_100n }),
       currentBatchId: 7n,
       currentSlot: 100_050,
     });
     render(<BatchTimeline />);
-    expect(screen.getByText(/Batch:\s*Revealing/i)).toBeInTheDocument();
+    expect(screen.getByText(/Batch:\s*Closed/i)).toBeInTheDocument();
     expect(screen.getByTestId('batch-countdown')).toHaveTextContent('00:00:20');
   });
 
@@ -163,7 +169,7 @@ describe('<BatchTimeline />', () => {
       currentSlot: 100_500,
     });
     render(<BatchTimeline />);
-    expect(screen.getByTestId('batch-past-deadline')).toHaveTextContent(/commit deadline passed/i);
+    expect(screen.getByTestId('batch-past-deadline')).toHaveTextContent(/collection closes\s*passed/i);
     expect(screen.getByTestId('batch-timeline')).toHaveAttribute('data-past-deadline', 'true');
   });
 

@@ -87,7 +87,7 @@ export function ChartToolbar({
         </span>
       )}
 
-      {/* Mark/Oracle toggle (UI only in v1 — keeper not yet online) */}
+      {/* Mark/Oracle toggle (UI-only placeholders until those feeds are surfaced) */}
       <span className="flex items-center gap-0.5 ml-2">
         <button
           type="button"
@@ -105,7 +105,7 @@ export function ChartToolbar({
           data-testid="toggle-oracle"
           data-active="false"
           disabled
-          title="Oracle price (Pyth) — coming when keeper is online"
+          title="Oracle price overlay is not surfaced in v1"
           className="px-1.5 py-0.5 text-[10px] font-mono rounded text-text-faint cursor-not-allowed"
         >
           Oracle

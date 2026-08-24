@@ -44,6 +44,15 @@ describe('Balances', () => {
     expect(screen.getByText('Loading…')).toBeInTheDocument();
   });
 
+  it('keeps existing balances visible while a background refresh is loading', () => {
+    render(<Balances data={makePortfolio()} loading />);
+    const root = screen.getByTestId('balances');
+    expect(root).toHaveAttribute('data-state', 'ready');
+    expect(root).toHaveAttribute('data-refreshing', 'true');
+    expect(screen.getByTestId('balances-equity')).toBeInTheDocument();
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument();
+  });
+
   it('renders all five balance rows when data is present', () => {
     render(<Balances data={makePortfolio()} />);
     const root = screen.getByTestId('balances');

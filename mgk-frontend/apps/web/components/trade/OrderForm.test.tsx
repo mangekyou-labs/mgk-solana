@@ -208,6 +208,33 @@ describe('OrderForm', () => {
     expect((screen.getByTestId('order-form-price-input') as HTMLInputElement).placeholder).toBe('151.00');
   });
 
+  it('does not default to a price from a crossed book', () => {
+    render(<OrderForm bestBid={150_000_000n} bestAsk={100_000_000n} />);
+
+    const price = screen.getByTestId('order-form-price-input') as HTMLInputElement;
+    expect(price.placeholder).toBe('0.00');
+
+    fireEvent.click(screen.getByTestId('order-form-side-sell'));
+    expect(price.placeholder).toBe('0.00');
+  });
+
+  it('shows base-asset size availability and margin capacity from free collateral', () => {
+    render(
+      <OrderForm
+        bestBid={100_000_000n}
+        bestAsk={101_000_000n}
+        freeCollateral={300_000_000n}
+      />,
+    );
+
+    expect(screen.getByTestId('order-form-size-available')).toHaveTextContent('3.00 SOL');
+
+    fireEvent.change(screen.getByTestId('order-form-qty-input'), {
+      target: { value: '1' },
+    });
+    expect(screen.getByTestId('order-form-margin-available')).toHaveTextContent('$30.00');
+  });
+
   it('renders the locked Cross margin mode tab', () => {
     render(<OrderForm bestBid={null} bestAsk={null} />);
     const el = screen.getByTestId('margin-mode-cross');
@@ -229,41 +256,151 @@ describe('OrderForm', () => {
     expect(screen.getByTestId('order-form-risk-panel')).toBeInTheDocument();
   });
 
-  describe('G12 — slashed banner', () => {
-    afterEach(() => {
-      // Reset to idle so the next test isn't affected
-      useOrderFormStore.setState({
-        status: 'idle',
-        salt: 0n,
-        hash: '',
-      });
-    });
-
-    it('is hidden when status is idle', () => {
-      render(<OrderForm bestBid={null} bestAsk={null} />);
+  it('does not render a slashed or reveal banner for live DFBA statuses', () => {
+    for (const status of ['idle', 'submitting', 'done', 'failed'] as const) {
+      useOrderFormStore.setState({ status, salt: 0n, hash: '' });
+      const { unmount } = render(<OrderForm bestBid={null} bestAsk={null} />);
       expect(screen.queryByTestId('order-form-slashed-banner')).toBeNull();
-    });
+      expect(screen.queryByText(/order slashed/i)).toBeNull();
+      expect(screen.queryByText(/awaiting reveal/i)).toBeNull();
+      unmount();
+    }
+    useOrderFormStore.setState({ status: 'idle', salt: 0n, hash: '' });
+  });
 
-    it('renders the banner with the slashed title when status is slashed', () => {
-      useOrderFormStore.setState({ status: 'slashed', hash: '0xdead', salt: 1n });
-      render(<OrderForm bestBid={null} bestAsk={null} />);
-      const banner = screen.getByTestId('order-form-slashed-banner');
-      expect(banner).toBeInTheDocument();
-      expect(banner.getAttribute('data-slashed')).toBe('true');
-      expect(screen.getByTestId('order-form-slashed-title')).toHaveTextContent('slashed');
-    });
+  // =====================================================================
+  // T9.10.7: Prepare-close + position display tests
+  // =====================================================================
 
-    it('shows a "Start fresh" button that clears the store', () => {
-      useOrderFormStore.setState({ status: 'slashed', hash: '0xdead', salt: 1n });
-      render(<OrderForm bestBid={null} bestAsk={null} />);
-      fireEvent.click(screen.getByTestId('order-form-slashed-dismiss'));
-      expect(useOrderFormStore.getState().status).toBe('idle');
-    });
+  it('shows zero position when positionQty is 0n', () => {
+    render(<OrderForm bestBid={null} bestAsk={null} positionQty={0n} />);
+    const pos = screen.getByTestId('order-form-position-display');
+    expect(pos).toHaveTextContent('0 SOL');
+  });
 
-    it('is NOT shown for transient failure states', () => {
-      useOrderFormStore.setState({ status: 'failed', hash: '0xdead', salt: 1n });
-      render(<OrderForm bestBid={null} bestAsk={null} />);
-      expect(screen.queryByTestId('order-form-slashed-banner')).toBeNull();
+  it('shows signed long position', () => {
+    render(<OrderForm bestBid={100_000_000n} bestAsk={101_000_000n} positionQty={5_000_000n} />);
+    const pos = screen.getByTestId('order-form-position-display');
+    expect(pos).toHaveTextContent('5 SOL');
+  });
+
+  it('shows signed short position', () => {
+    render(<OrderForm bestBid={100_000_000n} bestAsk={101_000_000n} positionQty={-3_500_000n} />);
+    const pos = screen.getByTestId('order-form-position-display');
+    expect(pos).toHaveTextContent('-3.5 SOL');
+  });
+
+  it('does not show prepare-close button when positionQty is 0n', () => {
+    render(<OrderForm bestBid={100_000_000n} bestAsk={101_000_000n} positionQty={0n} />);
+    expect(screen.queryByTestId('order-form-prepare-close')).toBeNull();
+  });
+
+  it('shows prepare-close button for long position', () => {
+    render(<OrderForm bestBid={100_000_000n} bestAsk={101_000_000n} positionQty={2_500_000n} />);
+    const btn = screen.getByTestId('order-form-prepare-close');
+    expect(btn).toBeInTheDocument();
+    expect(btn).toHaveTextContent('Close Long (2.5 SOL)');
+    expect(btn).not.toBeDisabled();
+  });
+
+  it('shows prepare-close button for short position', () => {
+    render(<OrderForm bestBid={100_000_000n} bestAsk={101_000_000n} positionQty={-1_000_000n} />);
+    const btn = screen.getByTestId('order-form-prepare-close');
+    expect(btn).toHaveTextContent('Close Short (1 SOL)');
+    expect(btn).not.toBeDisabled();
+  });
+
+  it('disables prepare-close when book is crossed', () => {
+    // bid > ask = crossed
+    render(<OrderForm bestBid={101_000_000n} bestAsk={100_000_000n} positionQty={1_000_000n} />);
+    const btn = screen.getByTestId('order-form-prepare-close');
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveTextContent('Book crossed');
+  });
+
+  it('disables prepare-close when opposing quote is absent', () => {
+    // Long position needs bestBid for sell
+    render(<OrderForm bestBid={null} bestAsk={101_000_000n} positionQty={1_000_000n} />);
+    const btn = screen.getByTestId('order-form-prepare-close');
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveTextContent('No opposing quote');
+  });
+
+  it('prepare-close sets sell side, reduce-only, qty, and price for long', () => {
+    const onSubmit = vi.fn();
+    render(
+      <OrderForm
+        bestBid={99_500_000n}
+        bestAsk={100_500_000n}
+        positionQty={3_000_000n}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('order-form-prepare-close'));
+
+    // Should be on sell side
+    expect(screen.getByTestId('order-form-side-sell').getAttribute('data-active')).toBe('true');
+    // Reduce-only checked
+    expect(screen.getByTestId('order-form-checkbox-input-reduce-only')).toBeChecked();
+    // Maker unchecked (taker mode)
+    expect(screen.getByTestId('order-form-checkbox-input-post-as-maker')).not.toBeChecked();
+    // Qty set to position size
+    expect((screen.getByTestId('order-form-qty-input') as HTMLInputElement).value).toBe('3');
+    // Price set to best bid (opposing quote for sell)
+    expect((screen.getByTestId('order-form-price-input') as HTMLInputElement).value).toBe('99.5');
+  });
+
+  it('prepare-close sets buy side, reduce-only, qty, and price for short', () => {
+    render(
+      <OrderForm
+        bestBid={99_500_000n}
+        bestAsk={100_500_000n}
+        positionQty={-2_000_000n}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('order-form-prepare-close'));
+
+    // Should be on buy side
+    expect(screen.getByTestId('order-form-side-buy').getAttribute('data-active')).toBe('true');
+    expect(screen.getByTestId('order-form-checkbox-input-reduce-only')).toBeChecked();
+    expect((screen.getByTestId('order-form-qty-input') as HTMLInputElement).value).toBe('2');
+    expect((screen.getByTestId('order-form-price-input') as HTMLInputElement).value).toBe('100.5');
+  });
+
+  it('fixed-point parsing: fractional amounts parse correctly', () => {
+    const onSubmit = vi.fn();
+    render(
+      <OrderForm bestBid={null} bestAsk={null} onSubmit={onSubmit} positionQty={0n} />,
+    );
+    fireEvent.change(screen.getByTestId('order-form-price-input'), {
+      target: { value: '150.25' },
     });
+    fireEvent.change(screen.getByTestId('order-form-qty-input'), {
+      target: { value: '0.123456' },
+    });
+    fireEvent.click(screen.getByTestId('order-form-submit-buy'));
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    const params = onSubmit.mock.calls[0][0];
+    expect(params.price).toBe(150_250_000n);
+    expect(params.qty).toBe(123_456n);
+  });
+
+  it('fixed-point parsing: whole numbers parse correctly', () => {
+    const onSubmit = vi.fn();
+    render(
+      <OrderForm bestBid={null} bestAsk={null} onSubmit={onSubmit} positionQty={0n} />,
+    );
+    fireEvent.change(screen.getByTestId('order-form-price-input'), {
+      target: { value: '100' },
+    });
+    fireEvent.change(screen.getByTestId('order-form-qty-input'), {
+      target: { value: '50' },
+    });
+    fireEvent.click(screen.getByTestId('order-form-submit-buy'));
+
+    const params = onSubmit.mock.calls[0][0];
+    expect(params.price).toBe(100_000_000n);
+    expect(params.qty).toBe(50_000_000n);
   });
 });

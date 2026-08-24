@@ -54,6 +54,7 @@ const ORACLE_MAGIC: u64 = 0x4C43_524F_4C43_5250;
 /// harmless.
 ///
 /// Data: num_instruments(2)
+#[allow(clippy::too_many_arguments)]
 pub fn process_liquidate_user(
     _program_id: &Pubkey,
     portfolio_account: &AccountInfo,
@@ -69,12 +70,10 @@ pub fn process_liquidate_user(
         return Err(MgkError::Unauthorized.into());
     }
 
-    let portfolio = unsafe {
-        &mut *(portfolio_account.borrow_mut_data_unchecked().as_ptr() as *mut Portfolio)
-    };
-    let registry = unsafe {
-        &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry)
-    };
+    let portfolio =
+        unsafe { &mut *(portfolio_account.borrow_mut_data_unchecked().as_ptr() as *mut Portfolio) };
+    let registry =
+        unsafe { &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry) };
 
     // M7 7.8: governance emergency brake. Liquidations can be paused by
     // governance (e.g. to manually intervene on a single position, or to
@@ -126,11 +125,11 @@ pub fn process_liquidate_user(
     let batch = unsafe { &*(batch_account.borrow_data_unchecked().as_ptr() as *const Batch) };
     if batch.status != BatchStatus::Settled {
         msg!("Error: Liquidate requires a Settled batch for mark_valid");
-        return Err(MgkError::InvalidInstruction.into());
+        return Err(MgkError::BatchNotSettled.into());
     }
     if batch.mark_valid == 0 || batch.liq_paused != 0 {
         msg!("Error: DFBA mark invalid / liq paused; liquidations blocked");
-        return Err(MgkError::OperationPaused.into());
+        return Err(MgkError::MarkInvalidForLiquidation.into());
     }
     // Prefer instrument mark when set; dual mid was written on settle when mark_valid.
     let any_mark = instrument_accounts.iter().any(|a| {
@@ -225,9 +224,8 @@ pub fn process_liquidate_user(
     let mut uncovered_bad_debt: u128 = 0;
     if portfolio.equity < 0 {
         let bad_debt = portfolio.equity.unsigned_abs();
-        let vault = unsafe {
-            &mut *(vault_account.borrow_mut_data_unchecked().as_ptr() as *mut Vault)
-        };
+        let vault =
+            unsafe { &mut *(vault_account.borrow_mut_data_unchecked().as_ptr() as *mut Vault) };
         let payout = bad_debt.min(vault.insurance_fund);
         if payout > 0 {
             vault.insurance_fund = vault.insurance_fund.saturating_sub(payout);
@@ -243,9 +241,8 @@ pub fn process_liquidate_user(
     }
 
     if uncovered_bad_debt > 0 {
-        let vault = unsafe {
-            &mut *(vault_account.borrow_mut_data_unchecked().as_ptr() as *mut Vault)
-        };
+        let vault =
+            unsafe { &mut *(vault_account.borrow_mut_data_unchecked().as_ptr() as *mut Vault) };
         vault.mark_adl_pending(uncovered_bad_debt);
         msg!("ADL pending: keeper observation required");
     }
@@ -287,11 +284,7 @@ fn recompute_margin(
             continue;
         }
         let inst_id = pos.instrument_id as usize;
-        let mark = mark_prices
-            .get(inst_id)
-            .copied()
-            .unwrap_or(0)
-            .max(0) as u64;
+        let mark = mark_prices.get(inst_id).copied().unwrap_or(0).max(0) as u64;
         let cs = contract_sizes.get(inst_id).copied().unwrap_or(1);
         let imr = imr_bps.get(inst_id).copied().unwrap_or(0) as u64;
         let mmr = mmr_bps.get(inst_id).copied().unwrap_or(0) as u64;

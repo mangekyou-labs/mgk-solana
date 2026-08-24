@@ -38,33 +38,33 @@ pub struct Instrument {
     /// mark price falls back to the oracle. Default 150 slots (~60s at
     /// 400ms/slot on mainnet, ~75s on devnet).
     pub mark_decay_window_slots: u64,
-    // M7 7.4: funding rate parameters (design L527-532 — Aligned with
-    // Bulk.Trade). All three are integer bps; the funding rate formula
-    // `F = clamp(P_mu + clamp(interest_rate - P_mu, -deviation_cap,
-    // deviation_cap), -funding_cap, funding_cap)` is computed in pure
-    // functions in `state/funding.rs` and applied in `SettleBatch`.
-    /// Base interest rate in bps (signed). Default 1 bp.
-    pub interest_rate_bps: i64,
-    /// Max deviation of interest from the premium SMA in bps. Default 5 bp.
-    pub deviation_cap_bps: i64,
-    /// Absolute clamp on the funding rate in bps. Default 50 bp.
-    pub funding_cap_bps: i64,
-    /// Target contract qty for the funding premium sweep (P_bid, P_ask).
-    /// Default 10_000 contracts (matches design L532).
-    pub funding_sample_qty: u64,
-    /// Number of premium samples used in the SMA (1..=16). Default 8.
-    /// Window of 0 means "use the latest sample only" — useful for
-    /// tests and first-batch edges.
-    pub funding_sma_window: u8,
-    /// How many samples are currently populated in `premium_samples[]`.
-    /// Saturates at 16. Capped at `funding_sma_window` for the SMA.
-    pub premium_sample_count: u8,
+    // D7: Funding rate parameters (replaces legacy SMA-based formula).
+    // The funding rate formula is:
+    //   rate_bps = clamp(((mark - index) * coefficient_bps) / index, ±max_rate_bps)
+    //
+    // Layout-compatible with M7 7.4 fields at the same offsets.
+    // Unused legacy fields (deviation_cap, sample_qty, sma_window,
+    // premium_samples) are retained as inert reserved bytes.
+
+    /// D7: Funding coefficient in bps (signed non-negative). 10_000 = 1×.
+    /// At offset 160 (was `interest_rate_bps`). Default 10_000.
+    pub funding_coefficient_bps: i64,
+    /// Legacy field — unused by D7. Retained as inert reserved bytes
+    /// for on-chain layout compatibility. Was `deviation_cap_bps`.
+    pub _reserved_deviation_cap: i64,
+    /// D7: Max absolute funding rate in bps (signed non-negative).
+    /// At offset 176 (was `funding_cap_bps`). Default 50.
+    pub max_funding_rate_bps: i64,
+    /// Legacy field — unused by D7. Was `funding_sample_qty`.
+    pub _reserved_sample_qty: u64,
+    /// Legacy field — unused by D7. Was `funding_sma_window`.
+    pub _reserved_sma_window: u8,
+    /// Legacy field — unused by D7. Was `premium_sample_count`.
+    pub _reserved_sample_count: u8,
     pub _pad_funding: [u8; 6],
-    /// Ring buffer of the most recent premium samples (bps × 1_000_000
-    /// for 6 decimal places of precision). Capacity 16. New samples are
-    /// written at `index = premium_sample_count % 16`; the SMA uses the
-    /// most recent `min(premium_sample_count, funding_sma_window)`.
-    pub premium_samples: [i64; 16],
+    /// Legacy field — unused by D7. Retained as inert reserved bytes.
+    /// Was `premium_samples` (16-entry ring buffer).
+    pub _reserved_premium_samples: [i64; 16],
 }
 
 impl Instrument {
@@ -86,12 +86,12 @@ impl Instrument {
         mark_reference_qty: u64,
         mark_decay_window_slots: u64,
         bump: u8,
-        // M7 7.4 — funding rate params (design L527-532)
-        interest_rate_bps: i64,
-        deviation_cap_bps: i64,
-        funding_cap_bps: i64,
-        funding_sample_qty: u64,
-        funding_sma_window: u8,
+        // D7 — funding rate params (replaces M7 7.4 SMA-based formula)
+        funding_coefficient_bps: i64,
+        _reserved_deviation_cap: i64,
+        max_funding_rate_bps: i64,
+        _reserved_sample_qty: u64,
+        _reserved_sma_window: u8,
     ) {
         self.instrument_id = instrument_id;
         self.base_symbol = base_symbol;
@@ -114,14 +114,14 @@ impl Instrument {
         self.mark_price = 0;
         self.mark_reference_qty = mark_reference_qty;
         self.mark_decay_window_slots = mark_decay_window_slots;
-        self.interest_rate_bps = interest_rate_bps;
-        self.deviation_cap_bps = deviation_cap_bps;
-        self.funding_cap_bps = funding_cap_bps;
-        self.funding_sample_qty = funding_sample_qty;
-        self.funding_sma_window = funding_sma_window;
-        self.premium_sample_count = 0;
+        self.funding_coefficient_bps = funding_coefficient_bps;
+        self._reserved_deviation_cap = _reserved_deviation_cap;
+        self.max_funding_rate_bps = max_funding_rate_bps;
+        self._reserved_sample_qty = _reserved_sample_qty;
+        self._reserved_sma_window = _reserved_sma_window;
+        self._reserved_sample_count = 0;
         self._pad_funding = [0; 6];
-        self.premium_samples = [0; 16];
+        self._reserved_premium_samples = [0; 16];
     }
 
     #[cfg(test)]
@@ -140,7 +140,7 @@ impl Instrument {
             imr_bps,
             mmr_bps,
             taker_fee_bps: 5,
-            maker_fee_bps: -2,
+            maker_fee_bps: 0,
             max_leverage: 10,
             _pad_ml: [0; 2],
             oracle_addr: Pubkey::default(),
@@ -153,14 +153,14 @@ impl Instrument {
             mark_price: 0,
             mark_reference_qty: 1_000,
             mark_decay_window_slots: 150,
-            interest_rate_bps: 1,
-            deviation_cap_bps: 5,
-            funding_cap_bps: 50,
-            funding_sample_qty: 10_000,
-            funding_sma_window: 8,
-            premium_sample_count: 0,
+            funding_coefficient_bps: 10_000,
+            _reserved_deviation_cap: 0,
+            max_funding_rate_bps: 50,
+            _reserved_sample_qty: 0,
+            _reserved_sma_window: 0,
+            _reserved_sample_count: 0,
             _pad_funding: [0; 6],
-            premium_samples: [0; 16],
+            _reserved_premium_samples: [0; 16],
         };
         inst.initialize_in_place(
             instrument_id,
@@ -171,18 +171,18 @@ impl Instrument {
             imr_bps,
             mmr_bps,
             5,
-            -2,
+            0,
             10,
             Pubkey::default(),
             100,
             1_000,
             150,
             0,
-            1,        // interest_rate_bps
-            5,        // deviation_cap_bps
-            50,       // funding_cap_bps
-            10_000,   // funding_sample_qty
-            8,        // funding_sma_window
+            10_000,   // funding_coefficient_bps (D7: 10_000 = 1×)
+            0,        // _reserved_deviation_cap
+            50,       // max_funding_rate_bps (D7: 50 bps cap)
+            0,        // _reserved_sample_qty
+            0,        // _reserved_sma_window
         );
         inst
     }
@@ -201,7 +201,9 @@ mod tests {
         assert_eq!(inst.mmr_bps, 50);
         assert!(inst.is_active);
         assert_eq!(inst.cum_funding, 0);
-        assert_eq!(inst.maker_fee_bps, -2);
+        // Locked D3: makers 0 bps (not a rebate), taker 5 bps.
+        assert_eq!(inst.maker_fee_bps, 0);
+        assert_eq!(inst.taker_fee_bps, 5);
     }
 
     #[test]
@@ -247,13 +249,13 @@ mod tests {
     #[test]
     fn test_funding_defaults() {
         let inst = Instrument::new(1, 1_000_000, 1_000, 100, 50);
-        assert_eq!(inst.interest_rate_bps, 1);
-        assert_eq!(inst.deviation_cap_bps, 5);
-        assert_eq!(inst.funding_cap_bps, 50);
-        assert_eq!(inst.funding_sample_qty, 10_000);
-        assert_eq!(inst.funding_sma_window, 8);
-        assert_eq!(inst.premium_sample_count, 0);
-        assert_eq!(inst.premium_samples, [0i64; 16]);
+        assert_eq!(inst.funding_coefficient_bps, 10_000); // D7 default
+        assert_eq!(inst._reserved_deviation_cap, 0);      // reserved
+        assert_eq!(inst.max_funding_rate_bps, 50);         // D7 default
+        assert_eq!(inst._reserved_sample_qty, 0);          // reserved
+        assert_eq!(inst._reserved_sma_window, 0);          // reserved
+        assert_eq!(inst._reserved_sample_count, 0);        // reserved
+        assert_eq!(inst._reserved_premium_samples, [0i64; 16]);
         assert_eq!(inst.last_funding_slot, 0);
         assert_eq!(inst.cum_funding, 0);
         assert_eq!(inst.funding_interval_slots, 100);

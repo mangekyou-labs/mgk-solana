@@ -3,6 +3,7 @@ export type StatusDotState = 'online' | 'offline' | 'connecting';
 export interface StatusDotProps {
   state: StatusDotState;
   className?: string;
+  'data-testid'?: string;
 }
 
 const STATE_CLASS: Record<StatusDotState, string> = {
@@ -17,10 +18,14 @@ const STATE_GLYPH: Record<StatusDotState, string> = {
   connecting: '◐',
 };
 
-export function StatusDot({ state, className }: StatusDotProps) {
+export function StatusDot({
+  state,
+  className,
+  'data-testid': testId = 'status-dot',
+}: StatusDotProps) {
   return (
     <span
-      data-testid="status-dot"
+      data-testid={testId}
       data-state={state}
       aria-label={state}
       className={['inline-block text-xs leading-none', STATE_CLASS[state], className ?? '']

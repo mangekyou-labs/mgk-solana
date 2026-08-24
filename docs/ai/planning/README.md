@@ -1,17 +1,22 @@
 ---
 phase: planning
 title: On-Chain Perps DEX — Task Breakdown
-description: Milestones and task breakdown for the commit-reveal CLOB perpetuals DEX
-status: in-progress
+description: Historical milestones M1–M8 (commit-reveal CLOB). Active DFBA migration plan is 2026-08-02-feature-onchain-perps-dex.md (M9).
+status: historical-m1-m8
 audit: 2026-06-16 — Design-vs-impl audit completed. M1-M6(6k) done. 8 P0 gaps and 9 P1 deviations identified. M7 (Pre-Testnet Criticals) added.
 supplemental: 2026-06-19 — M8 (PropAMM-Inspired Adoptions) added. 4-P5 design decisions incorporated. R4b confirmed DONE (deployment 2026-06-17). program_ids.rs bug and design-doc API gaps identified.
+dfba: 2026-08-02 — Matching model pivots to pure DFBA. Active plan: docs/ai/planning/2026-08-02-feature-onchain-perps-dex.md. Do not start new commit-reveal work from this file.
 ---
 
 # On-Chain Perps DEX — Task Breakdown
 
+> **ACTIVE PLAN (2026-08-02, reconciled 2026-08-20):** DFBA migration — [`2026-08-02-feature-onchain-perps-dex.md`](./2026-08-02-feature-onchain-perps-dex.md) (Milestone M9).
+> Next implementation slice: **T9.10.3** index keeper (T9.10.1–2 done 2026-08-20). Do not rewrite matching.
+> Requirements + design are DFBA. Everything below is **historical** M1–M8 (commit-reveal CLOB). Keep for audit; do not extend commit-reveal scope.
+
 ## Context
 
-The design doc (`docs/ai/design/feature-onchain-perps-dex.md`) specifies a fully on-chain perpetual futures exchange with commit-reveal batch auctions, Fisher-Yates shuffle, structural priority queues, and price-time CLOB matching with persistent order book.
+**Superseded framing:** The pre-DFBA design specified a fully on-chain perpetual futures exchange with commit-reveal batch auctions, Fisher-Yates shuffle, structural priority queues, and price-time CLOB matching with persistent order book.
 
 **MVP scope (post 2025-06-15 strip):** All cross-slab / router / AMM / Kani-prover scaffolding has been removed. The MVP is the perps-dex end-to-end: oracle (M1), core portfolio/instruments (M3), batch lifecycle (M4), liquidation (M5), and the CLOB rewrite (M6). Three on-chain programs:
 

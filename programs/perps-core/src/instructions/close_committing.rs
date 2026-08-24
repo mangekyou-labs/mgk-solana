@@ -1,7 +1,10 @@
 use crate::state::{Batch, BatchStatus, Registry};
 use mgk_common::MgkError;
 use pinocchio::{
-    account_info::AccountInfo, msg, pubkey::Pubkey, sysvars::{clock::Clock, Sysvar},
+    account_info::AccountInfo,
+    msg,
+    pubkey::Pubkey,
+    sysvars::{clock::Clock, Sysvar},
     ProgramResult,
 };
 
@@ -11,7 +14,13 @@ pub fn process_close_committing(
     registry_account: &AccountInfo,
 ) -> ProgramResult {
     let batch = unsafe { &mut *(batch_account.borrow_mut_data_unchecked().as_ptr() as *mut Batch) };
-    let registry = unsafe { &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry) };
+    let registry =
+        unsafe { &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry) };
+
+    if registry.is_trading_paused() || registry.is_clears_paused() {
+        msg!("Error: Trading/clears is paused");
+        return Err(MgkError::OperationPaused.into());
+    }
 
     if batch.status != BatchStatus::Committing {
         msg!("Error: Batch not in committing phase");
@@ -53,8 +62,6 @@ pub fn process_close_committing(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::Registry;
-    use pinocchio::pubkey::Pubkey;
 
     /// Test the deterministic post-conditions of close_committing (status
     /// transition, close_slot, shuffle_seed, reveal_deadline) using a fake

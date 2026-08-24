@@ -1,10 +1,6 @@
 use crate::state::Registry;
 use mgk_common::MgkError;
-use pinocchio::{
-    account_info::AccountInfo,
-    msg,
-    ProgramResult,
-};
+use pinocchio::{account_info::AccountInfo, msg, ProgramResult};
 
 /// M7 7.8: governance-only instruction to set or clear pause flags.
 ///
@@ -44,7 +40,8 @@ pub fn process_set_pause_flags(
 mod tests {
     use super::*;
     use crate::state::registry::{
-        PAUSE_FUNDING, PAUSE_LIQUIDATIONS, PAUSE_TRADING, PAUSE_WITHDRAWALS,
+        PAUSE_CLEAR, PAUSE_FUNDING, PAUSE_LIQUIDATIONS, PAUSE_POST, PAUSE_TRADING,
+        PAUSE_WITHDRAWALS,
     };
     use pinocchio::pubkey::Pubkey;
 
@@ -57,7 +54,7 @@ mod tests {
     #[test]
     fn test_set_pause_flags_zero_clears_all() {
         let mut r = make_registry(1);
-        r.pause_flags = 0x0F;
+        r.pause_flags = 0x3F; // all 6 flags
         r.set_pause_flags(0);
         assert_eq!(r.pause_flags, 0);
     }
@@ -65,7 +62,14 @@ mod tests {
     #[test]
     fn test_set_pause_flags_writes_each_bit() {
         let mut r = make_registry(2);
-        for bit in [PAUSE_TRADING, PAUSE_WITHDRAWALS, PAUSE_LIQUIDATIONS, PAUSE_FUNDING] {
+        for bit in [
+            PAUSE_TRADING,
+            PAUSE_WITHDRAWALS,
+            PAUSE_LIQUIDATIONS,
+            PAUSE_FUNDING,
+            PAUSE_POST,
+            PAUSE_CLEAR,
+        ] {
             r.set_pause_flags(bit);
             assert_eq!(r.pause_flags, bit);
         }
@@ -75,7 +79,7 @@ mod tests {
     fn test_set_pause_flags_masks_reserved_bits() {
         let mut r = make_registry(3);
         r.set_pause_flags(0b_1111_1111);
-        assert_eq!(r.pause_flags, 0b_0000_1111);
+        assert_eq!(r.pause_flags, 0b_0011_1111); // bits 6..7 masked off
     }
 
     #[test]

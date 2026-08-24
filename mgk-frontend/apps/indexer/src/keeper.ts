@@ -28,6 +28,8 @@ import { state, programs } from '@mgk/sdk';
 const { encodeInitPortfolioForUser } = programs;
 import type { Store } from './store.js';
 import { getPortfolioQueue } from './portfolio-queue.js';
+import { isOwnedAccountWithMinimumSize } from './runtimeValidation.js';
+import { selectActiveBatchCandidate, shouldCloseCommitting } from './keeperSelection.js';
 
 const { decodeBatch, decodeRegistry, BATCH_SIZE, COMMITMENT_SIZE } = state;
 
@@ -379,6 +381,33 @@ function saveOracleKeypair(keypair: Keypair): void {
   }
 }
 
+type LiveBatchCandidate = {
+  address: PublicKey;
+  batch: ReturnType<typeof decodeBatch>;
+  info: Awaited<ReturnType<Connection['getAccountInfo']>>;
+};
+
+/** Scan only when the persisted batch keypair is stale or unavailable. */
+async function scanActiveBatchCandidates(
+  connection: Connection,
+  corePid: PublicKey,
+): Promise<LiveBatchCandidate[]> {
+  const accounts = await connection.getProgramAccounts(corePid, {
+    filters: [{ dataSize: BATCH_SIZE }],
+    encoding: 'base64',
+  });
+
+  return accounts.flatMap(({ pubkey, account }) => {
+    try {
+      const info = account as Awaited<ReturnType<Connection['getAccountInfo']>>;
+      if (!info || !isOwnedAccountWithMinimumSize(info, corePid, BATCH_SIZE)) return [];
+      return [{ address: pubkey, batch: decodeBatch(new Uint8Array(account.data)), info }];
+    } catch {
+      return [];
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 
 async function createTrackedBatch(
@@ -633,62 +662,58 @@ async function runKeeperCycle(state: KeeperState): Promise<void> {
   } else {
     [batchPda] = deriveBatchPda(currentBatchId, corePid);
   }
-  const batchInfo = await connection.getAccountInfo(batchPda);
+  let batchInfo = await connection.getAccountInfo(batchPda);
+  let batch: ReturnType<typeof decodeBatch> | null = null;
+  const trackedCandidate = isOwnedAccountWithMinimumSize(batchInfo, corePid, BATCH_SIZE)
+    ? (() => {
+        const decoded = decodeBatch(new Uint8Array(batchInfo!.data));
+        return { address: batchPda.toBase58(), batchId: decoded.batchId };
+      })()
+    : null;
 
-  if (!batchInfo) {
-    // Batch not found — either first run (counter=0, already handled above)
-    // or stale batch from previous program ID that we can't close.
-    // Create the NEXT batch (registry.counter) to skip past the stale one.
-    const nextBatchId = registry.batchIdCounter; // = 1 when stale batch #0 exists
-    console.log(`[keeper] Batch #${currentBatchId} not found — creating batch #${nextBatchId} to skip stale batch`);
-    try {
-      const batchKeypair = Keypair.generate();
-      const batchPda = batchKeypair.publicKey;
-      const batchLamports = await connection.getMinimumBalanceForRentExemption(BATCH_SIZE);
-      const tx = new Transaction();
-      tx.add(
-        SystemProgram.createAccount({
-          fromPubkey: keypair.publicKey,
-          newAccountPubkey: batchPda,
-          lamports: batchLamports,
-          space: BATCH_SIZE,
-          programId: corePid,
-        }),
+  if (trackedCandidate?.batchId === currentBatchId) {
+    batch = decodeBatch(new Uint8Array(batchInfo!.data));
+  } else {
+    if (trackedCandidate) {
+      console.log(
+        `[keeper] Tracked batch address ${batchPda.toBase58()} contains batch #${trackedCandidate.batchId}, ` +
+          `but registry active batch is #${currentBatchId}; scanning before creating.`,
       );
-      tx.add({
-        keys: [
-          { pubkey: batchPda, isWritable: true, isSigner: true },
-          { pubkey: registryPda, isWritable: true, isSigner: false },
-        ],
-        programId: corePid,
-        data: encodeCreateBatch(0),
-      });
-      const sig = await sendAndConfirmTransactionPolling(
-        connection,
-        tx,
-        [keypair, batchKeypair],
-        { commitment: 'confirmed' },
-      );
-      console.log(`[keeper] Batch #${nextBatchId} created: ${sig} (address: ${batchPda.toBase58()})`);
-      state.currentBatchKeypair = batchKeypair;
-      saveBatchKeypair(batchKeypair);
-      state.onCurrentBatchAddress?.(batchPda.toBase58());
-    } catch (err) {
-      console.error(`[keeper] Batch creation failed:`, err);
     }
-    return;
+
+    const discovered = await scanActiveBatchCandidates(connection, corePid);
+    const selected = selectActiveBatchCandidate(
+      currentBatchId,
+      trackedCandidate,
+      discovered.map(({ address, batch: discoveredBatch }) => ({
+        address: address.toBase58(),
+        batchId: discoveredBatch.batchId,
+      })),
+    );
+
+    if (selected) {
+      const live = discovered.find(({ address }) => address.toBase58() === selected.candidate.address);
+      if (live) {
+        batchPda = live.address;
+        batchInfo = live.info;
+        batch = live.batch;
+        state.currentBatchKeypair = null;
+        state.onCurrentBatchAddress?.(batchPda.toBase58());
+        console.log(`[keeper] Using scanned active batch #${currentBatchId} at ${batchPda.toBase58()}`);
+      }
+    }
+
+    if (!batch) {
+      // No account for the registry's active ID exists. Create exactly the
+      // counter value so the new account becomes the next active batch.
+      const nextBatchId = registry.batchIdCounter;
+      console.log(`[keeper] Batch #${currentBatchId} not found — creating batch #${nextBatchId}`);
+      await createTrackedBatch(state, registryPda, nextBatchId, 'active batch account missing');
+      return;
+    }
   }
 
-  const batch = decodeBatch(new Uint8Array(batchInfo.data));
-  if (batch.batchId !== currentBatchId) {
-    console.error(
-      `[keeper] Tracked batch address ${batchPda.toBase58()} contains batch #${batch.batchId}, ` +
-      `but registry active batch is #${currentBatchId}; creating a fresh active batch.`,
-    );
-    state.currentBatchKeypair = null;
-    await createTrackedBatch(state, registryPda, registry.batchIdCounter, 'tracked batch mismatch');
-    return;
-  }
+  if (!batchInfo || !batch) return;
 
   console.log(
     `[keeper] Batch #${currentBatchId}: status=${batch.status}, ` +
@@ -698,15 +723,20 @@ async function runKeeperCycle(state: KeeperState): Promise<void> {
 
   const currentSlot = await connection.getSlot();
 
-  // --- PHASE: Committing → transition to Revealing ---
+  // --- PHASE: Committing → CloseCollecting (DFBA: lands in Clearing) ---
   if (batch.status === BATCH_STATUS_COMMITTING) {
     const deadlineReached = currentSlot >= Number(batch.commitDeadlineSlot);
-    const hasEnoughCommitments = batch.totalCommitments >= registry.nMin;
+    const shouldClose = shouldCloseCommitting(
+      BigInt(currentSlot),
+      BigInt(batch.commitDeadlineSlot),
+      BigInt(batch.totalCommitments),
+      BigInt(registry.nMin),
+    );
 
-    if (deadlineReached && hasEnoughCommitments) {
+    if (shouldClose) {
       console.log(
-        `[keeper] CloseCommitting: slot ${currentSlot} >= ${batch.commitDeadlineSlot}, ` +
-        `n_min met (${batch.totalCommitments} >= ${registry.nMin})`,
+        `[keeper] CloseCollecting (DFBA): slot ${currentSlot} >= ${batch.commitDeadlineSlot}, ` +
+        `posts=${batch.totalCommitments} n_min=${registry.nMin}`,
       );
       try {
         const tx = new Transaction();
@@ -785,66 +815,24 @@ async function runKeeperCycle(state: KeeperState): Promise<void> {
         console.log(
           `[keeper] Waiting for commit deadline: slot ${currentSlot} < ${batch.commitDeadlineSlot}`,
         );
-      if (!hasEnoughCommitments)
-        console.log(`[keeper] Waiting for n_min: ${batch.totalCommitments} < ${registry.nMin}`);
+      if (deadlineReached)
+        console.log('[keeper] Empty/underfilled batch remains open until the next keeper cycle');
     }
   }
 
-  // --- PHASE: Revealing → ClearBatch ---
-  if (batch.status === BATCH_STATUS_REVEALING) {
-    const revealDeadlineReached = currentSlot >= Number(batch.revealDeadlineSlot);
-    if (revealDeadlineReached && batch.totalRevealed === 0) {
-      console.log(
-        `[keeper] Reveal deadline reached for batch #${currentBatchId} with zero revealed orders; ` +
-        'creating a fresh committing batch so devnet users are not stranded.',
-      );
-      await createTrackedBatch(state, registryPda, registry.batchIdCounter, 'zero-reveal recovery');
-      return;
-    }
-
-    if (revealDeadlineReached && batch.totalRevealed > 0) {
-      console.log(`[keeper] Reveal deadline reached, calling ClearBatch...`);
-
-      const commitments = await findCommitmentsForBatch(connection, corePid, currentBatchId);
-      const revealed = commitments.filter(c => c.status === 1); // Revealed
-
-      if (revealed.length === 0) {
-        console.log(`[keeper] No revealed commitments, skipping ClearBatch`);
-        return;
-      }
-
-      console.log(`[keeper] Found ${revealed.length} revealed commitments`);
-
-      // Collect unique users and portfolio PDAs
-      const userSet = new Set<string>();
-      const portfolioMap = new Map<string, PublicKey>();
-      const commitmentPubkeys: PublicKey[] = [];
-
-      for (const c of revealed) {
-        commitmentPubkeys.push(c.pubkey);
-        const userStr = c.user.toBase58();
-        if (!userSet.has(userStr)) {
-          userSet.add(userStr);
-          const [pda] = derivePortfolioPda(c.user, corePid);
-          portfolioMap.set(userStr, pda);
-        }
-      }
-
-      // For single-instrument (SOL-PERP = 0), use instrument 0 and its book
+  // --- PHASE: Clearing → DfbaClear (if no results yet) then Settle ---
+  if (batch.status === BATCH_STATUS_CLEARING || batch.status === BATCH_STATUS_REVEALING) {
+    if (!state.resultsAddress) {
+      console.log(`[keeper] Calling ClearBatch (DFBA / book collect)...`);
       const instrumentId = 0;
       const bookPda = bookAddr
         ? new PublicKey(bookAddr)
         : deriveBookPda(instrumentId, matcherPid)[0];
       const instrumentPda = await resolveInstrumentAccount(state, instrumentId, instrumentAddr);
       if (!instrumentPda) return;
-      // Solana 4.x: keep results keypair to sign createAccount
       const resultsKeypair = Keypair.generate();
       const resultsPda = resultsKeypair.publicKey;
-
-      // Build ClearBatch instruction using SDK encoding
-      // Accounts order (matches entrypoint): batch, book, results, matcher, registry,
-      //   instrument, commitments..., portfolios...
-      const clearIxData = encodeClearBatch(revealed.length, 1, userSet.size);
+      const clearIxData = encodeClearBatch(0, 1, 0);
       const clearIxKeys = [
         { pubkey: batchPda, isWritable: true, isSigner: false },
         { pubkey: bookPda, isWritable: true, isSigner: false },
@@ -852,54 +840,40 @@ async function runKeeperCycle(state: KeeperState): Promise<void> {
         { pubkey: matcherPid, isWritable: false, isSigner: false },
         { pubkey: registryPda, isWritable: false, isSigner: false },
         { pubkey: instrumentPda, isWritable: false, isSigner: false },
-        ...commitmentPubkeys.map(pk => ({ pubkey: pk, isWritable: false, isSigner: false })),
-        ...[...userSet].map(u => ({ pubkey: portfolioMap.get(u)!, isWritable: false, isSigner: false })),
       ];
-
       try {
-        const resultsLamports = await connection.getMinimumBalanceForRentExemption(RESULTS_SIZE);
+        const dfbaResultsSize = Math.max(RESULTS_SIZE, 16 * 1024);
+        const resultsLamports = await connection.getMinimumBalanceForRentExemption(dfbaResultsSize);
         const tx = new Transaction();
         tx.add(
           SystemProgram.createAccount({
             fromPubkey: keypair.publicKey,
             newAccountPubkey: resultsPda,
             lamports: resultsLamports,
-            space: RESULTS_SIZE,
+            space: dfbaResultsSize,
             programId: matcherPid,
           }),
         );
         tx.add({ keys: clearIxKeys, programId: corePid, data: clearIxData });
-
         const sig = await sendAndConfirmTransactionPolling(connection, tx, [keypair, resultsKeypair], {
           commitment: 'confirmed',
         });
         state.resultsAddress = resultsPda.toBase58();
-        console.log(`[keeper] ClearBatch success: ${sig}`);
-        console.log(`[keeper] ClearBatch results: ${state.resultsAddress}`);
+        console.log(`[keeper] ClearBatch (DFBA) success: ${sig}`);
         return;
       } catch (err) {
-        console.error(`[keeper] ClearBatch failed:`, err);
+        console.error(`[keeper] ClearBatch (DFBA) failed:`, err);
+        return;
       }
-    } else {
-      if (!revealDeadlineReached)
-        console.log(
-          `[keeper] Waiting for reveal deadline: slot ${currentSlot} < ${batch.revealDeadlineSlot}`,
-        );
-      if (batch.totalRevealed === 0) console.log(`[keeper] No revealed orders yet`);
     }
-  }
 
-  // --- PHASE: Clearing → SettleBatch ---
-  if (batch.status === BATCH_STATUS_CLEARING) {
-    console.log(`[keeper] Batch in Clearing phase, calling SettleBatch...`);
+    // resultsAddress set → settle (DFBA allows zero commitments).
+    console.log(
+      `[keeper] SettleBatch (DFBA): markValid=${batch.markValid} liqPaused=${batch.liqPaused}`,
+    );
 
     const commitments = await findCommitmentsForBatch(connection, corePid, currentBatchId);
-    const active = commitments.filter(c => c.status === 1 || c.status === 2); // Revealed or Slashed
-
-    if (active.length === 0) {
-      console.log(`[keeper] No active commitments, skipping SettleBatch`);
-      return;
-    }
+    const active = commitments.filter(c => c.status === 1 || c.status === 2);
 
     const userSet = new Set<string>();
     const portfolioMap = new Map<string, PublicKey>();
@@ -915,6 +889,7 @@ async function runKeeperCycle(state: KeeperState): Promise<void> {
       }
     }
 
+    // DFBA allows zero commitments (orders rest on book).
     const instrumentPda = await resolveInstrumentAccount(state, 0, state.instrumentAddress);
     if (!instrumentPda) return;
     const bookPda = state.bookAddress
@@ -997,12 +972,24 @@ async function ensureOracleInitialized(state: KeeperState): Promise<void> {
   const oraclePda = oracleKeypair.publicKey;
 
   const oracleInfo = await connection.getAccountInfo(oraclePda);
-  if (oracleInfo !== null) {
+  if (isOwnedAccountWithMinimumSize(oracleInfo, oraclePid, ORACLE_SIZE)) {
     console.log(`[oracle] Already initialized: ${oraclePda.toBase58()}`);
     return;
   }
 
+  if (oracleInfo !== null) {
+    console.log(
+      `[oracle] Replacing stale account ${oraclePda.toBase58()}: ` +
+        `owner=${oracleInfo.owner.toBase58()} size=${oracleInfo.data.length}; ` +
+        `expected owner=${oraclePid.toBase58()} size>=${ORACLE_SIZE}`,
+    );
+    state.oracleKeypair = Keypair.generate();
+  }
+
   console.log(`[oracle] Creating oracle account...`);
+
+  const activeOracleKeypair = state.oracleKeypair;
+  const activeOraclePda = activeOracleKeypair.publicKey;
 
   // Derive instrument PDA to use as the instrument field
   const [instrumentPda] = deriveInstrumentPda(0, oraclePid);
@@ -1014,7 +1001,7 @@ async function ensureOracleInitialized(state: KeeperState): Promise<void> {
   initData.writeUInt8(255, 8);     // bump (ignored for keypair-owned)
 
   const initIxKeys = [
-    { pubkey: oraclePda, isWritable: true, isSigner: true },     // oracle account (keypair signs createAccount)
+    { pubkey: activeOraclePda, isWritable: true, isSigner: true },     // oracle account (keypair signs createAccount)
     { pubkey: keypair.publicKey, isWritable: true, isSigner: true }, // authority (governance)
     { pubkey: instrumentPda, isWritable: false, isSigner: false },   // instrument (only .key() used)
   ];
@@ -1025,7 +1012,7 @@ async function ensureOracleInitialized(state: KeeperState): Promise<void> {
     tx.add(
       SystemProgram.createAccount({
         fromPubkey: keypair.publicKey,
-        newAccountPubkey: oraclePda,
+        newAccountPubkey: activeOraclePda,
         lamports: rentExempt,
         space: ORACLE_SIZE,
         programId: oraclePid,
@@ -1033,11 +1020,11 @@ async function ensureOracleInitialized(state: KeeperState): Promise<void> {
     );
     tx.add({ keys: initIxKeys, programId: oraclePid, data: Buffer.concat([Buffer.from([0]), initData]) });
 
-    const sig = await sendAndConfirmTransactionPolling(connection, tx, [keypair, oracleKeypair], {
+    const sig = await sendAndConfirmTransactionPolling(connection, tx, [keypair, activeOracleKeypair], {
       commitment: 'confirmed',
     });
-    console.log(`[oracle] Initialized: ${sig} (oracle: ${oraclePda.toBase58()})`);
-    saveOracleKeypair(oracleKeypair);
+    console.log(`[oracle] Initialized: ${sig} (oracle: ${activeOraclePda.toBase58()})`);
+    saveOracleKeypair(activeOracleKeypair);
   } catch (err) {
     console.error(`[oracle] Initialization failed:`, err);
     process.exit(1);

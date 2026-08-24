@@ -63,12 +63,37 @@ desktop.ini
 !vercel.json
 !Surfpool.toml
 !pnpm-workspace.yaml
+!render.yaml
 
 # Local configuration
 .env
 .env.local
+.env.*
 .percolator/
 tests/e2e/test-ledger/
 test-ledger/
 target/
 .vercel
+
+# Indexer database (persistent, never commit)
+*.db
+*.db-shm
+*.db-wal
+
+# Playwright/MCP artifacts
+.playwright-mcp/
+.playwright-cli/
+.freebuff/
+.agents/skills/playwright-skill/
+
+# Brand images (not part of codebase)
+brand.md
+*.png
+
+# Checkpoint/backup files
+*.log
+
+# Render secrets (never commit)
+render-secret*.json
+keeper-keypair*.json
+oracle-keypair*.json
