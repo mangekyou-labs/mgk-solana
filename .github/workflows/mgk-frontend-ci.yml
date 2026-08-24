@@ -2,11 +2,11 @@ name: mgk-frontend CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - 'mgk-frontend/**'
   pull_request:
-    branches: [main]
+    branches: [master]
     paths:
       - 'mgk-frontend/**'
 

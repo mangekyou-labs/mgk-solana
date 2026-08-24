@@ -1,5 +1,5 @@
 use pinocchio::{
-    account_info::AccountInfo, entrypoint, msg, program_error::ProgramError, pubkey::Pubkey,
+    account_info::AccountInfo, msg, program_error::ProgramError, pubkey::Pubkey,
     ProgramResult,
 };
 
@@ -16,7 +16,8 @@ use crate::instructions::{
 use crate::state::{Portfolio, Registry, Vault};
 use mgk_common::{borrow_account_data_mut, validate_owner, validate_writable, MgkError};
 
-entrypoint!(process_instruction);
+#[cfg(all(target_os = "solana", not(test)))]
+pinocchio::entrypoint!(process_instruction);
 
 pub fn process_instruction(
     program_id: &Pubkey,

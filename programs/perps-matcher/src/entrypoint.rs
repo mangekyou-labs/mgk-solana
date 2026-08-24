@@ -1,11 +1,12 @@
 use pinocchio::{
-    account_info::AccountInfo, entrypoint, msg, program_error::ProgramError, pubkey::Pubkey,
+    account_info::AccountInfo, msg, program_error::ProgramError, pubkey::Pubkey,
     ProgramResult,
 };
 
 use crate::instructions;
 
-entrypoint!(process_instruction);
+#[cfg(all(target_os = "solana", not(test)))]
+pinocchio::entrypoint!(process_instruction);
 
 enum MatcherInstruction {
     ComputeClearing,
