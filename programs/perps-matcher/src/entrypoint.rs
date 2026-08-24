@@ -5,6 +5,7 @@ use pinocchio::{
 
 use crate::instructions;
 
+#[cfg(all(target_os = "solana", not(test)))]
 entrypoint!(process_instruction);
 
 enum MatcherInstruction {
