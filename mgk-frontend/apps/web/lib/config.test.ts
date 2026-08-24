@@ -1,13 +1,14 @@
 import { PublicKey } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const CORE_DEVNET = '3jYQ4mpWBBtwrzYQ4zzKhgqVcWWsG2HpXi9oXTBpekja';
-const MATCHER_DEVNET = 'AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF';
-const ORACLE_DEVNET = '6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA';
+// M9 DFBA deploy (2026-08-06) — must match lib/config.ts DEVNET_DEFAULTS
+const CORE_DEVNET = 'C7w2mKz2KQgDroNNhACm9MutXhPiesVr9Gn2x8TDsRYx';
+const MATCHER_DEVNET = '7WiZuunbPGciCedsVTguvjezwwzrhmXG5HkdCuHizbNC';
+const ORACLE_DEVNET = 'CsSqVZMoXixNYstNhTtixeT4pyRgrYnXdpfoXQBgFPqZ';
 const SYSTEM_PROGRAM = '11111111111111111111111111111111';
-const BOOK_DEVNET = '5nfbjqTYpsnHnmCifdFpwLwajhyb8n6orVvbMbSrGT6w';
-const VAULT_DEVNET = '3FZS8JUn8FGz1CUroGYwrBVHqotaUquJMNnSuBCQxheT';
-const REGISTRY_DEVNET = 'F7zWN2XrVqNDBBYqsYpgxHa6AuPK1aQE33kHwM4f8ayV';
+const BOOK_DEVNET = 'J33Y6yo6AZM6JKLEw89tN1kPmyEADqWWjGxb1aAW915j';
+const VAULT_DEVNET = '9qe7TkRxDXHo3dywPKiiY1jwSBnFuSPHmGTWhcP8ttXE';
+const REGISTRY_DEVNET = 'CbsfrRS2rYE2qgJbi7MM6mLzARUy8cDiYmHW2o12jYJA';
 
 describe('config', () => {
   beforeEach(() => {
@@ -65,7 +66,7 @@ describe('config', () => {
     expect(config.registryAddress!.toBase58()).toBe(REGISTRY_DEVNET);
   });
 
-  it('defaults batchAddress to null because keeper rotates keypair batches', async () => {
+  it('defaults batchAddress to null (derive from registry counter / indexer)', async () => {
     const { config } = await import('./config');
     expect(config.batchAddress).toBeNull();
   });

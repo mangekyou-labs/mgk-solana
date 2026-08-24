@@ -6,7 +6,7 @@
 //! - Safe account data deserialization
 //! - Common account validation patterns
 
-use crate::error::PercolatorError;
+use crate::error::MgkError;
 use pinocchio::{account_info::AccountInfo, pubkey::Pubkey};
 
 /// Validate that an account is owned by the expected program
@@ -17,11 +17,11 @@ use pinocchio::{account_info::AccountInfo, pubkey::Pubkey};
 ///
 /// # Returns
 /// * `Ok(())` if the account is owned by the expected program
-/// * `Err(PercolatorError::InvalidAccountOwner)` otherwise
+/// * `Err(MgkError::InvalidAccountOwner)` otherwise
 #[inline]
-pub fn validate_owner(account: &AccountInfo, expected_owner: &Pubkey) -> Result<(), PercolatorError> {
+pub fn validate_owner(account: &AccountInfo, expected_owner: &Pubkey) -> Result<(), MgkError> {
     if account.owner() != expected_owner {
-        return Err(PercolatorError::InvalidAccountOwner);
+        return Err(MgkError::InvalidAccountOwner);
     }
     Ok(())
 }
@@ -33,11 +33,11 @@ pub fn validate_owner(account: &AccountInfo, expected_owner: &Pubkey) -> Result<
 ///
 /// # Returns
 /// * `Ok(())` if the account is a signer
-/// * `Err(PercolatorError::InvalidAccount)` otherwise
+/// * `Err(MgkError::InvalidAccount)` otherwise
 #[inline]
-pub fn validate_signer(account: &AccountInfo) -> Result<(), PercolatorError> {
+pub fn validate_signer(account: &AccountInfo) -> Result<(), MgkError> {
     if !account.is_signer() {
-        return Err(PercolatorError::InvalidAccount);
+        return Err(MgkError::InvalidAccount);
     }
     Ok(())
 }
@@ -49,11 +49,11 @@ pub fn validate_signer(account: &AccountInfo) -> Result<(), PercolatorError> {
 ///
 /// # Returns
 /// * `Ok(())` if the account is writable
-/// * `Err(PercolatorError::InvalidAccount)` otherwise
+/// * `Err(MgkError::InvalidAccount)` otherwise
 #[inline]
-pub fn validate_writable(account: &AccountInfo) -> Result<(), PercolatorError> {
+pub fn validate_writable(account: &AccountInfo) -> Result<(), MgkError> {
     if !account.is_writable() {
-        return Err(PercolatorError::InvalidAccount);
+        return Err(MgkError::InvalidAccount);
     }
     Ok(())
 }
@@ -66,11 +66,11 @@ pub fn validate_writable(account: &AccountInfo) -> Result<(), PercolatorError> {
 ///
 /// # Returns
 /// * `Ok(())` if the account key matches
-/// * `Err(PercolatorError::InvalidAccount)` otherwise
+/// * `Err(MgkError::InvalidAccount)` otherwise
 #[inline]
-pub fn validate_key(account: &AccountInfo, expected_key: &Pubkey) -> Result<(), PercolatorError> {
+pub fn validate_key(account: &AccountInfo, expected_key: &Pubkey) -> Result<(), MgkError> {
     if account.key() != expected_key {
-        return Err(PercolatorError::InvalidAccount);
+        return Err(MgkError::InvalidAccount);
     }
     Ok(())
 }
@@ -82,18 +82,18 @@ pub fn validate_key(account: &AccountInfo, expected_key: &Pubkey) -> Result<(), 
 ///
 /// # Returns
 /// * `Ok(())` if the account appears initialized
-/// * `Err(PercolatorError::InvalidAccount)` otherwise
+/// * `Err(MgkError::InvalidAccount)` otherwise
 #[inline]
-pub fn validate_initialized(account: &AccountInfo) -> Result<(), PercolatorError> {
-    let data = account.try_borrow_data().map_err(|_| PercolatorError::InvalidAccount)?;
+pub fn validate_initialized(account: &AccountInfo) -> Result<(), MgkError> {
+    let data = account.try_borrow_data().map_err(|_| MgkError::InvalidAccount)?;
 
     if data.is_empty() {
-        return Err(PercolatorError::InvalidAccount);
+        return Err(MgkError::InvalidAccount);
     }
 
     // Check if the first bytes are non-zero (simple initialization check)
     if data[0] == 0 && data.len() > 1 && data[1] == 0 {
-        return Err(PercolatorError::InvalidAccount);
+        return Err(MgkError::InvalidAccount);
     }
 
     Ok(())
@@ -111,20 +111,20 @@ pub fn validate_initialized(account: &AccountInfo) -> Result<(), PercolatorError
 ///
 /// # Returns
 /// * `Ok(&T)` if the account data can be safely cast to &T
-/// * `Err(PercolatorError)` if validation fails
-pub unsafe fn borrow_account_data<T>(account: &AccountInfo) -> Result<&T, PercolatorError> {
-    let data = account.try_borrow_data().map_err(|_| PercolatorError::InvalidAccount)?;
+/// * `Err(MgkError)` if validation fails
+pub unsafe fn borrow_account_data<T>(account: &AccountInfo) -> Result<&T, MgkError> {
+    let data = account.try_borrow_data().map_err(|_| MgkError::InvalidAccount)?;
 
     // Check size
     if data.len() < core::mem::size_of::<T>() {
-        return Err(PercolatorError::InvalidAccount);
+        return Err(MgkError::InvalidAccount);
     }
 
     // Check alignment
     let ptr = data.as_ptr();
     #[allow(clippy::manual_is_multiple_of)] // `is_multiple_of` not stable in SBF toolchain (Rust <1.87)
     if (ptr as usize) % core::mem::align_of::<T>() != 0 {
-        return Err(PercolatorError::InvalidAccount);
+        return Err(MgkError::InvalidAccount);
     }
 
     // SAFETY: Caller must ensure T is valid for this account
@@ -143,21 +143,21 @@ pub unsafe fn borrow_account_data<T>(account: &AccountInfo) -> Result<&T, Percol
 ///
 /// # Returns
 /// * `Ok(&mut T)` if the account data can be safely cast to &mut T
-/// * `Err(PercolatorError)` if validation fails
+/// * `Err(MgkError)` if validation fails
 #[allow(clippy::mut_from_ref)]
-pub unsafe fn borrow_account_data_mut<T>(account: &AccountInfo) -> Result<&mut T, PercolatorError> {
-    let data = account.try_borrow_mut_data().map_err(|_| PercolatorError::InvalidAccount)?;
+pub unsafe fn borrow_account_data_mut<T>(account: &AccountInfo) -> Result<&mut T, MgkError> {
+    let data = account.try_borrow_mut_data().map_err(|_| MgkError::InvalidAccount)?;
 
     // Check size
     if data.len() < core::mem::size_of::<T>() {
-        return Err(PercolatorError::InvalidAccount);
+        return Err(MgkError::InvalidAccount);
     }
 
     // Check alignment
     let ptr = data.as_ptr();
     #[allow(clippy::manual_is_multiple_of)] // `is_multiple_of` not stable in SBF toolchain (Rust <1.87)
     if (ptr as usize) % core::mem::align_of::<T>() != 0 {
-        return Err(PercolatorError::InvalidAccount);
+        return Err(MgkError::InvalidAccount);
     }
 
     // SAFETY: Caller must ensure T is valid for this account
@@ -172,14 +172,14 @@ pub unsafe fn borrow_account_data_mut<T>(account: &AccountInfo) -> Result<&mut T
 ///
 /// # Returns
 /// * `Ok(())` if all validations pass
-/// * `Err(PercolatorError)` if any validation fails
+/// * `Err(MgkError)` if any validation fails
 #[inline]
 pub fn validate_account_full(
     account: &AccountInfo,
     expected_owner: &Pubkey,
     require_signer: bool,
     require_writable: bool,
-) -> Result<(), PercolatorError> {
+) -> Result<(), MgkError> {
     validate_owner(account, expected_owner)?;
 
     if require_signer {

@@ -1,22 +1,22 @@
 ---
 phase: testing
 title: mgk On-Chain Perps DEX — Test Strategy
-description: Test coverage plan for the commit-reveal CLOB perpetuals DEX (oracle + perps-core + perps-matcher + common). MVP scope per docs/ai/planning/README.md.
-status: in-progress
+description: HISTORICAL commit-reveal CLOB coverage. Active DFBA tests — see 2026-08-02-feature-onchain-perps-dex.md
+status: historical
 audit: 2026-06-16 — testing/ doc was deleted in 2025-06-15 strip; recreated here from current test inventory.
+dfba: 2026-08-02 — Active plan docs/ai/testing/2026-08-02-feature-onchain-perps-dex.md
 ---
 
 # mgk On-Chain Perps DEX — Test Strategy
 
+> **ACTIVE DFBA testing:** [`2026-08-02-feature-onchain-perps-dex.md`](./2026-08-02-feature-onchain-perps-dex.md)
+> Content below is **historical** (commit-reveal CLOB). Do not add new commit-reveal scenarios.
+
 ## Context
 
-The mgk (formerly percolator) perps-dex MVP is a 3-program Solana stack: fallback oracle, perps-core (custody + batch lifecycle), perps-matcher (CLOB matching). All logic is `no_std` Rust on Pinocchio; no Anchor, no IDL, single-byte discriminators.
+The mgk (formerly percolator) perps-dex MVP is a 3-program Solana stack: fallback oracle, perps-core (custody + batch lifecycle), perps-matcher. All logic is `no_std` Rust on Pinocchio; no Anchor, no IDL, single-byte discriminators.
 
-Design: `docs/ai/design/feature-onchain-perps-dex.md` (commit-reveal CLOB with Fisher-Yates shuffle, structural priority queues, price-time priority matching, persistent order book).
-
-Plan: `docs/ai/planning/README.md` (M1, M3, M4, M5 done; M6 6a-6k done; 6j.9.1-6j.9.5 done as of 2026-06-16).
-
-This doc was deleted in the 2025-06-15 strip. It is being recreated to cover the mgk MVP and pin down what is/isn't tested.
+**Superseded design framing:** commit-reveal CLOB with Fisher-Yates shuffle, structural priority queues, price-time matching.
 
 ## Test Inventory (current state, 2026-06-16)
 

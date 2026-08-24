@@ -49,7 +49,7 @@ impl OrderType {
     }
 }
 
-/// A revealed order ready for clearing
+/// A limit order ready for book placement or clearing.
 #[derive(Debug, Clone, Copy)]
 pub struct LimitOrder {
     pub user: Pubkey,
@@ -60,6 +60,8 @@ pub struct LimitOrder {
     pub qty: u64,
     pub reduce_only: bool,
     pub cancel_order_id: u64,
+    /// DFBA role: `true` = maker (liquidity), `false` = taker (default).
+    pub is_maker: bool,
 }
 
 /// A fill receipt for a matched order

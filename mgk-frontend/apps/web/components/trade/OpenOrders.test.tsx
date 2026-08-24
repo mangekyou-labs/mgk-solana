@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { PublicKey } from '@solana/web3.js';
 import { describe, expect, it, vi } from 'vitest';
 import * as sdk from '@mgk/sdk';
@@ -9,11 +9,12 @@ import { OpenOrders } from './OpenOrders';
 const USER = new PublicKey('2ecHahNv1LcVsmp614f8XTdpcTksNMwx7FkCJBtsMiQX');
 
 const getMultipleAccountsInfo = vi.fn();
+const sendTransaction = vi.fn();
 
 vi.mock('@solana/wallet-adapter-react', () => ({
   useWallet: () => ({
     publicKey: USER,
-    sendTransaction: vi.fn(),
+    sendTransaction,
   }),
   useConnection: () => ({
     connection: {
@@ -69,5 +70,31 @@ describe('OpenOrders', () => {
     expect(await screen.findByTestId('open-order-row')).toBeInTheDocument();
     expect(screen.getByTestId('open-order-price')).toHaveTextContent('0.15');
     expect(onCountChange).toHaveBeenCalledWith(1);
+  });
+
+  it('shows validation feedback instead of silently ignoring a zero modify quantity', async () => {
+    getMultipleAccountsInfo.mockResolvedValue([
+      {
+        data: bookWithUserOrder(USER),
+        executable: false,
+        lamports: 1,
+        owner: config.matcherProgramId,
+      },
+    ]);
+    sendTransaction.mockReset();
+
+    render(<OpenOrders instrumentId={0} />);
+
+    await screen.findByTestId('open-order-row');
+    fireEvent.click(screen.getByTestId('open-order-modify'));
+    fireEvent.change(screen.getByTestId('open-order-modify-input'), {
+      target: { value: '0' },
+    });
+    fireEvent.click(screen.getByTestId('open-order-modify-confirm'));
+
+    expect(screen.getByTestId('open-order-modify-error')).toHaveTextContent(
+      'Enter a quantity greater than 0.',
+    );
+    expect(sendTransaction).not.toHaveBeenCalled();
   });
 });

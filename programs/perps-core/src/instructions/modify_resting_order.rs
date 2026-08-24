@@ -1,5 +1,5 @@
 use crate::state::Portfolio;
-use percolator_common::{PercolatorError, validate_owner, validate_writable};
+use mgk_common::{MgkError, validate_owner, validate_writable};
 use pinocchio::{
     account_info::AccountInfo,
     instruction::{AccountMeta, Instruction},
@@ -32,12 +32,12 @@ pub fn process_modify_resting_order(
 ) -> ProgramResult {
     if new_qty == 0 {
         msg!("Error: new_qty must be > 0");
-        return Err(PercolatorError::InvalidAmount.into());
+        return Err(MgkError::InvalidAmount.into());
     }
 
     if !user_account.is_signer() {
         msg!("Error: User must be signer");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     validate_owner(portfolio_account, program_id)?;
@@ -47,7 +47,7 @@ pub fn process_modify_resting_order(
     let portfolio = unsafe { &*(portfolio_account.borrow_data_unchecked().as_ptr() as *const Portfolio) };
     if portfolio.user != *user_account.key() {
         msg!("Error: Portfolio does not belong to user");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     // Build CPI to matcher's ModifyResting (disc 2).

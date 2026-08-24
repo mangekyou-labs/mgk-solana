@@ -15,7 +15,7 @@
 //! lives in `LiquidateUser` to keep this file free of side effects.
 
 use crate::state::{portfolio::Position, MAX_INSTRUMENTS, MAX_POSITIONS};
-use percolator_common::PercolatorError;
+use mgk_common::MgkError;
 
 /// Default number of reduction rounds (decision D4: 5, not the design's
 /// 10 — we don't have market sweep, so more rounds don't help).
@@ -133,7 +133,7 @@ pub fn apply_reduction(
 /// = 0, contract_size = 1, IMR = MMR = 0) and `full_flat` records PnL =
 /// `qty * (0 - entry) = -qty * entry` — destroying equity without warning.
 ///
-/// Returns `Err(PercolatorError::InstrumentMissingForLiquidation)` if any
+/// Returns `Err(MgkError::InstrumentMissingForLiquidation)` if any
 /// position's instrument is absent from `passed_instrument_ids` or if the
 /// `instrument_id` itself is out of range (state corruption: only 32
 /// instruments exist, so anything >= 32 is unrepresentable).
@@ -144,15 +144,15 @@ pub fn validate_instrument_coverage(
     positions: &[Position; MAX_POSITIONS],
     count: usize,
     passed_instrument_ids: &[u16],
-) -> Result<(), PercolatorError> {
+) -> Result<(), MgkError> {
     let count = count.min(MAX_POSITIONS);
     for pos in positions.iter().take(count) {
         let id = pos.instrument_id;
         if (id as usize) >= MAX_INSTRUMENTS {
-            return Err(PercolatorError::InstrumentMissingForLiquidation);
+            return Err(MgkError::InstrumentMissingForLiquidation);
         }
         if !passed_instrument_ids.contains(&id) {
-            return Err(PercolatorError::InstrumentMissingForLiquidation);
+            return Err(MgkError::InstrumentMissingForLiquidation);
         }
     }
     Ok(())
@@ -163,7 +163,7 @@ mod tests {
     use super::*;
     use crate::state::portfolio::{Portfolio, MAX_INSTRUMENTS};
     use crate::state::vault::Vault;
-    use percolator_common::math::{calculate_im, calculate_mm};
+    use mgk_common::math::{calculate_im, calculate_mm};
     use pinocchio::pubkey::Pubkey;
 
     fn pos(instrument_id: u16, qty: i64, entry_vwap: i64) -> Position {
@@ -688,7 +688,7 @@ mod tests {
         let passed = [0u16, 1, 2];
         assert_eq!(
             validate_instrument_coverage(&positions, 2, &passed),
-            Err(PercolatorError::InstrumentMissingForLiquidation)
+            Err(MgkError::InstrumentMissingForLiquidation)
         );
     }
 
@@ -703,7 +703,7 @@ mod tests {
         let passed: [u16; 0] = [];
         assert_eq!(
             validate_instrument_coverage(&positions, 1, &passed),
-            Err(PercolatorError::InstrumentMissingForLiquidation)
+            Err(MgkError::InstrumentMissingForLiquidation)
         );
     }
 
@@ -719,7 +719,7 @@ mod tests {
         let passed = [100u16];
         assert_eq!(
             validate_instrument_coverage(&positions, 1, &passed),
-            Err(PercolatorError::InstrumentMissingForLiquidation)
+            Err(MgkError::InstrumentMissingForLiquidation)
         );
     }
 
@@ -755,7 +755,7 @@ mod tests {
         // would break the on-chain error code visible to clients.
         // Pattern from reveal_order.rs::test_reveal_deadline_expired_error_in_perps_core_range.
         assert_eq!(
-            PercolatorError::InstrumentMissingForLiquidation as u32,
+            MgkError::InstrumentMissingForLiquidation as u32,
             601,
             "InstrumentMissingForLiquidation must stay in the perps-core 600-699 range"
         );

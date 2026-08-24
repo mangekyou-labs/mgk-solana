@@ -1,147 +1,35 @@
-use crate::instructions::commit_order::compute_commitment_hash;
-use crate::state::order::{OrderType, Side};
-use crate::state::{
-    Batch, BatchStatus, Commitment, CommitmentStatus, Portfolio, Registry, RevealedOrder,
-};
-use percolator_common::PercolatorError;
-use pinocchio::{
-    account_info::AccountInfo, msg, sysvars::{clock::Clock, Sysvar},
-    ProgramResult,
-};
+use mgk_common::MgkError;
+use pinocchio::{account_info::AccountInfo, msg, ProgramResult};
 
 #[allow(clippy::too_many_arguments)]
 pub fn process_reveal_order(
-    commitment_account: &AccountInfo,
-    user_account: &AccountInfo,
-    portfolio_account: &AccountInfo,
-    batch_account: &AccountInfo,
-    registry_account: &AccountInfo,
-    order_type: u8,
-    instrument_id: u16,
-    reduce_only: bool,
-    side: u8,
-    price: i64,
-    qty: u64,
-    salt: u64,
-    batch_id: u64,
+    _commitment_account: &AccountInfo,
+    _user_account: &AccountInfo,
+    _portfolio_account: &AccountInfo,
+    _batch_account: &AccountInfo,
+    _registry_account: &AccountInfo,
+    _order_type: u8,
+    _instrument_id: u16,
+    _reduce_only: bool,
+    _side: u8,
+    _price: i64,
+    _qty: u64,
+    _salt: u64,
+    _batch_id: u64,
 ) -> ProgramResult {
-    // M7 7.8: governance emergency brake. Trading pause blocks reveals
-    // (new order flow) but the existing batch can still be settled by
-    // the keeper (CloseCommitting / ClearBatch / SettleBatch are NOT
-    // gated by trading_paused).
-    let registry = unsafe { &*(registry_account.borrow_data_unchecked().as_ptr() as *const Registry) };
-    if registry.is_trading_paused() {
-        msg!("Error: Trading is paused");
-        return Err(PercolatorError::OperationPaused.into());
-    }
-
-    if !user_account.is_signer() {
-        msg!("Error: User must be signer");
-        return Err(PercolatorError::Unauthorized.into());
-    }
-
-    // Validate portfolio ownership
-    let portfolio = unsafe {
-        &*(portfolio_account.borrow_data_unchecked().as_ptr() as *const Portfolio)
-    };
-    if portfolio.user != *user_account.key() {
-        msg!("Error: Portfolio does not belong to user");
-        return Err(PercolatorError::Unauthorized.into());
-    }
-
-    // Read batch state
-    let batch = unsafe {
-        &mut *(batch_account.borrow_mut_data_unchecked().as_ptr() as *mut Batch)
-    };
-    if batch.batch_id != batch_id {
-        msg!("Error: Wrong batch ID");
-        return Err(PercolatorError::InvalidInstruction.into());
-    }
-    if batch.status != BatchStatus::Revealing {
-        msg!("Error: Batch not in revealing phase");
-        return Err(PercolatorError::InvalidInstruction.into());
-    }
-
-    // M7 7.3: enforce reveal deadline (design L153). `reveal_deadline_slot`
-    // is set in `CloseCommitting` to `close_slot + registry.t_reveal_slots`.
-    // By the time we reach this point `batch.status == Revealing`, so the
-    // field is guaranteed to be set (CloseCommitting is the only path into
-    // Revealing). We use `Clock::get()` to match the existing pattern in
-    // `close_committing` and `settle_batch`; no extra account is needed in
-    // the entrypoint.
-    //
-    // Boundary: `current_slot > reveal_deadline_slot` is the failure
-    // condition. `current_slot == reveal_deadline_slot` is the last slot
-    // that may reveal — matches the design's "by deadline" semantics where
-    // the deadline slot itself is inclusive.
-    let current_slot = Clock::get()?.slot;
-    if current_slot > batch.reveal_deadline_slot {
-        msg!("Error: Reveal deadline expired");
-        return Err(PercolatorError::RevealDeadlineExpired.into());
-    }
-
-    // Read commitment
-    let commitment = unsafe {
-        &mut *(commitment_account.borrow_mut_data_unchecked().as_ptr() as *mut Commitment)
-    };
-
-    if commitment.user != *user_account.key() {
-        msg!("Error: Commitment does not belong to user");
-        return Err(PercolatorError::Unauthorized.into());
-    }
-
-    if commitment.status != CommitmentStatus::Pending {
-        msg!("Error: Commitment already revealed or settled");
-        return Err(PercolatorError::InvalidInstruction.into());
-    }
-
-    // Verify hash matches
-    let computed_hash = compute_commitment_hash(
-        order_type,
-        instrument_id,
-        reduce_only,
-        side,
-        price,
-        qty,
-        salt,
-        user_account.key(),
-        batch_id,
-    );
-    if computed_hash != commitment.order_hash {
-        msg!("Error: Revealed order does not match commitment");
-        return Err(PercolatorError::InvalidInstruction.into());
-    }
-
-    // Validate order_type and side are well-formed
-    let parsed_order_type = OrderType::from_u8(order_type)
-        .ok_or(PercolatorError::InvalidInstruction)?;
-    let parsed_side = Side::from_u8(side).ok_or(PercolatorError::InvalidInstruction)?;
-
-    // Populate typed revealed order storage.
-    let commitment_idx = batch.total_revealed;
-    commitment.revealed = RevealedOrder {
-        user: *user_account.key(),
-        price,
-        qty,
-        salt,
-        instrument_id,
-        commitment_idx,
-        order_type: parsed_order_type,
-        side: parsed_side,
-        reduce_only,
-        _padding: [0; 3],
-    };
-    commitment.status = CommitmentStatus::Revealed;
-    batch.total_revealed = batch.total_revealed.saturating_add(1);
-
-    msg!("RevealOrder: commitment revealed");
-    Ok(())
+    // DFBA: RevealOrder retired — use PostOrder (disc 20).
+    msg!("Error: RevealOrder retired; use PostOrder");
+    Err(MgkError::InvalidInstruction.into())
 }
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{Batch, BatchStatus, Commitment, CommitmentStatus};
+    use crate::state::order::{OrderType, Side};
+    use crate::state::{
+        Batch, BatchStatus, Commitment, CommitmentStatus, RevealedOrder,
+    };
     use pinocchio::pubkey::Pubkey;
 
     #[test]
@@ -284,7 +172,7 @@ mod tests {
     #[test]
     fn test_reveal_deadline_expired_error_in_perps_core_range() {
         assert_eq!(
-            PercolatorError::RevealDeadlineExpired as u32, 600,
+            MgkError::RevealDeadlineExpired as u32, 600,
             "RevealDeadlineExpired must stay in the perps-core 600-699 range"
         );
     }
@@ -298,7 +186,7 @@ mod tests {
         let mut r = Registry::new(Pubkey::from([8u8; 32]));
         r.set_pause_flags(PAUSE_TRADING);
         assert!(r.is_trading_paused());
-        let err: u64 = PercolatorError::OperationPaused.into();
+        let err: u64 = MgkError::OperationPaused.into();
         assert_eq!(err, 602);
     }
 }

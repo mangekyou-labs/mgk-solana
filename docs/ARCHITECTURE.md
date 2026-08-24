@@ -143,8 +143,8 @@ Three on-chain programs + one shared library crate, all Pinocchio (`pinocchio::e
 |---|---|---|
 | `mgk-perps-core` | Portfolio mgmt, batch lifecycle, custody, mark price | `3jYQ4mpWBBtwrzYQ4zzKhgqVcWWsG2HpXi9oXTBpekja` |
 | `mgk-perps-matcher` | Price-time priority CLOB matching, shuffle, priority queues | `AU4EKQAQupEbMWPK9fuJA7CZqfcjM5Bpgf6Ew9Y7o2FF` |
-| `percolator-oracle` | Fallback price feed (admin-pushed, auto-activate) | `6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA` |
-| `percolator-common` | Shared account validation, errors, math (library crate) | — |
+| `mgk-oracle` | Fallback price feed (admin-pushed, auto-activate) | `6M9eEiDKy8imbDi44ZqquyfknNbveRjD4j9VnvYaHtmA` |
+| `mgk-common` | Shared account validation, errors, math (library crate) | — |
 
 ### Program Descriptions
 
@@ -183,7 +183,7 @@ Key instructions (single-byte discriminator, not Anchor's 8-byte SHA256 digest):
 
 **Critical rule:** the matcher never calls Core, and never holds funds. Book state lives in matcher accounts but is rent-exempted by Core. The matcher is stateful: GTC orders persist as `OrderBook` PDA accounts across batches.
 
-**percolator-oracle** is the fallback price feed. Same `PriceFeed` struct used by the primary Pyth path. Auto-activates when Pyth is stale, frozen, or has excessive confidence intervals. Admin can manually activate/deactivate.
+**mgk-oracle** is the fallback price feed. Same `PriceFeed` struct used by the primary Pyth path. Auto-activates when Pyth is stale, frozen, or has excessive confidence intervals. Admin can manually activate/deactivate.
 
 | Disc | Instruction | Auth | Description |
 |---|---|---|---|

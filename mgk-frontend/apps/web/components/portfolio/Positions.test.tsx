@@ -92,6 +92,18 @@ describe('Positions', () => {
     expect(screen.getByTestId('positions')).toHaveAttribute('data-state', 'loading');
   });
 
+  it('keeps existing rows visible while a background refresh is loading', () => {
+    const p = makePortfolio([
+      makePosition({ instrumentId: 1, qty: 1000n, entryVwap: 50_000_000n }),
+    ]);
+    render(<Positions data={p} loading />);
+    const root = screen.getByTestId('positions');
+    expect(root).toHaveAttribute('data-state', 'ready');
+    expect(root).toHaveAttribute('data-refreshing', 'true');
+    expect(screen.getByTestId('position-row')).toBeInTheDocument();
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument();
+  });
+
   it('renders a row per position', () => {
     const p = makePortfolio([
       makePosition({ instrumentId: 1, qty: 1000n, entryVwap: 50_000_000n }),

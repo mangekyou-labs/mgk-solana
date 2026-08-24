@@ -1,10 +1,23 @@
 import type { PublicKey } from '@solana/web3.js';
 import { Side } from '../instruction.js';
 
+/**
+ * On-chain batch phase (u8 @ Batch.status).
+ *
+ * DFBA v1 lifecycle: Collecting → Clearing → Settled.
+ * Wire values are stable; names follow DFBA (not commit-reveal).
+ * `Committing` / `Revealing` remain as numeric aliases for older callers.
+ */
 export const BatchStatus = {
+  /** Open post window — DFBA orders accepted (wire 0). */
+  Collecting: 0,
+  /** @deprecated DFBA alias — same wire value as Collecting. */
   Committing: 0,
+  /** @deprecated DFBA skips reveal; wire 1 retained for layout/compat only. */
   Revealing: 1,
+  /** Dual auction running (keeper ClearBatch). */
   Clearing: 2,
+  /** Fills applied; next batch opened. */
   Settled: 3,
 } as const;
 export type BatchStatus = (typeof BatchStatus)[keyof typeof BatchStatus];
@@ -51,7 +64,9 @@ export interface BatchState {
   commitDeadlineSlot: bigint;
   revealDeadlineSlot: bigint;
   closeSlot: bigint;
+  /** Unused in DFBA (legacy shuffle seed). */
   shuffleSeed: bigint;
+  /** DFBA mid mark when markValid; else 0 / VWAP fallback. */
   clearingPrice: bigint;
   totalCommitments: number;
   totalRevealed: number;
@@ -60,6 +75,16 @@ export interface BatchState {
   totalNotional: bigint;
   slashedDeposits: bigint;
   bump: number;
+  /** DFBA bid auction clearing price. */
+  bidClearingPrice: bigint;
+  /** DFBA ask auction clearing price. */
+  askClearingPrice: bigint;
+  matchedBidQty: bigint;
+  matchedAskQty: bigint;
+  /** Both auctions produced a clear this batch. */
+  markValid: boolean;
+  /** Liquidations paused (no dual clear). */
+  liqPaused: boolean;
 }
 
 export interface CommitmentState {
@@ -89,7 +114,8 @@ export interface PortfolioState {
   bump: number;
 }
 
-export const BATCH_SIZE = 120; // size_of::<Batch>() in Rust (verified against struct layout)
+/** size_of::<Batch>() after DFBA fields (was 120 pre-DFBA). */
+export const BATCH_SIZE = 160;
 export const COMMITMENT_SIZE = 168;
 export const PORTFOLIO_SIZE = 1456; // BPF layout: i128/u128 have 8-byte alignment (not 16 like native)
 export const MAX_POSITIONS = 32;

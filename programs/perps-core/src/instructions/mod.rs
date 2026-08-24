@@ -13,7 +13,12 @@ pub mod init_vault;
 pub mod initialize;
 pub mod liquidate_user;
 pub mod modify_resting_order;
+pub mod post_order;
 pub mod reveal_order;
+pub mod set_batch_params;
+pub mod set_funding_params;
+pub mod set_instrument_fees;
+pub mod set_instrument_oracle;
 pub mod set_pause_flags;
 pub mod settle_batch;
 pub mod withdraw;
@@ -33,7 +38,12 @@ pub use init_vault::*;
 pub use initialize::*;
 pub use liquidate_user::*;
 pub use modify_resting_order::*;
+pub use post_order::*;
 pub use reveal_order::*;
+pub use set_batch_params::*;
+pub use set_funding_params::*;
+pub use set_instrument_fees::*;
+pub use set_instrument_oracle::*;
 pub use set_pause_flags::*;
 pub use settle_batch::*;
 pub use withdraw::*;
@@ -78,4 +88,19 @@ pub enum CoreInstruction {
     /// signs). Browser wallet then calls InitPortfolio (disc 1) on the
     /// pre-created account (idempotent, skips if already initialized).
     InitPortfolioForUser = 19,
+    /// DFBA open post (disc 20) — single-tx place on book with maker/taker flag.
+    /// Replaces CommitOrder+RevealOrder for the DFBA path.
+    PostOrder = 20,
+    /// Governance-only: update batch parameters (disc 21).
+    /// Controls: max_orders_per_batch, marginal_size_cap, t_min/t_max slots, n_min.
+    SetBatchParams = 21,
+    /// Governance-only: retune instrument taker (u16) and maker (i16) fees (disc 22).
+    /// Locked D3 default is taker 5 / maker 0.
+    SetInstrumentFees = 22,
+    /// Governance-only: bind instrument to price oracle account (disc 23).
+    SetInstrumentOracle = 23,
+    /// Governance-only: update D7 funding parameters (disc 24).
+    /// Controls: coefficient_bps, max_rate_bps, interval_slots.
+    /// Resets last_funding_slot to prevent backfill.
+    SetFundingParams = 24,
 }

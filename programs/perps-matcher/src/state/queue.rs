@@ -38,6 +38,7 @@ impl PartitionedOrders {
                 qty: 0,
                 reduce_only: false,
                 cancel_order_id: 0,
+            is_maker: false,
             }; MAX_ORDERS],
             cancel_count: 0,
             alo_count: 0,
@@ -165,6 +166,7 @@ mod tests {
             qty: byte as u64, // unique qty tracks input order
             reduce_only: false,
             cancel_order_id: 0,
+        is_maker: false,
         }
     }
 
@@ -333,6 +335,7 @@ mod tests {
                 qty: (i + 1) as u64,
                 reduce_only: false,
                 cancel_order_id: 0,
+            is_maker: false,
             };
         }
         let p = partition(&input);

@@ -1,10 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import {
   CORE_INSTRUCTION,
+  MATCHER_INSTRUCTION,
   encodeCommitOrder,
   encodeDeposit,
+  encodeDfbaClear,
   encodeInitPortfolio,
+  encodePostOrder,
+  encodePlaceResting,
   encodeRevealOrder,
+  encodeSetFundingParams,
+  encodeSetInstrumentFees,
+  encodeSetInstrumentOracle,
   encodeWithdraw,
 } from './core.js';
 import { InstructionReader, Side } from '../instruction.js';
@@ -25,6 +32,107 @@ describe('CORE_INSTRUCTION discriminator table', () => {
     expect(CORE_INSTRUCTION.AddInstrument).toBe(10);
     expect(CORE_INSTRUCTION.CancelRestingOrder).toBe(11);
     expect(CORE_INSTRUCTION.ModifyRestingOrder).toBe(12);
+    expect(CORE_INSTRUCTION.PostOrder).toBe(20);
+    expect(CORE_INSTRUCTION.SetBatchParams).toBe(21);
+    expect(CORE_INSTRUCTION.SetInstrumentFees).toBe(22);
+    expect(CORE_INSTRUCTION.SetInstrumentOracle).toBe(23);
+    expect(CORE_INSTRUCTION.SetFundingParams).toBe(24);
+    expect(MATCHER_INSTRUCTION.DfbaClear).toBe(5);
+    expect(MATCHER_INSTRUCTION.PlaceResting).toBe(6);
+  });
+});
+
+describe('encodeSetFundingParams', () => {
+  it('emits 25-byte disc-24 wire: coeff i64 + max_rate i64 + interval u64 LE', () => {
+    const buf = encodeSetFundingParams(10_000, 50, 100);
+    expect(buf.length).toBe(25);
+    expect(buf[0]).toBe(CORE_INSTRUCTION.SetFundingParams);
+    const view = new DataView(buf.buffer);
+    expect(view.getBigInt64(1, true)).toBe(10_000n);
+    expect(view.getBigInt64(9, true)).toBe(50n);
+    expect(view.getBigUint64(17, true)).toBe(100n);
+  });
+
+  it('round-trips negative coefficient as i64 LE', () => {
+    const buf = encodeSetFundingParams(-1, 50, 100);
+    const view = new DataView(buf.buffer);
+    expect(view.getBigInt64(1, true)).toBe(-1n);
+  });
+});
+
+describe('encodeSetInstrumentOracle', () => {
+  it('emits 1-byte disc-23 wire', () => {
+    const buf = encodeSetInstrumentOracle();
+    expect(buf.length).toBe(1);
+    expect(buf[0]).toBe(23);
+    expect(buf[0]).toBe(CORE_INSTRUCTION.SetInstrumentOracle);
+  });
+});
+
+describe('encodeSetInstrumentFees', () => {
+  it('emits 5-byte disc-22 wire: taker u16 + maker i16 LE', () => {
+    const buf = encodeSetInstrumentFees(5, 0);
+    expect(buf.length).toBe(5);
+    expect(buf[0]).toBe(CORE_INSTRUCTION.SetInstrumentFees);
+    const view = new DataView(buf.buffer);
+    expect(view.getUint16(1, true)).toBe(5);
+    expect(view.getInt16(3, true)).toBe(0);
+  });
+});
+
+describe('encodePostOrder', () => {
+  it('emits 22-byte DFBA post wire format', () => {
+    const buf = encodePostOrder({
+      side: Side.Buy,
+      isMaker: true,
+      price: 100_500_000n,
+      qty: 10n,
+      instrumentId: 1,
+      reduceOnly: false,
+    });
+    expect(buf.length).toBe(22);
+    expect(buf[0]).toBe(CORE_INSTRUCTION.PostOrder);
+    expect(buf[1]).toBe(Side.Buy);
+    expect(buf[2]).toBe(1); // maker
+    const view = new DataView(buf.buffer);
+    expect(view.getBigInt64(3, true)).toBe(100_500_000n);
+    expect(view.getBigUint64(11, true)).toBe(10n);
+    expect(view.getUint16(19, true)).toBe(1);
+    expect(buf[21]).toBe(0);
+  });
+
+  it('defaults isMaker to taker', () => {
+    const buf = encodePostOrder({
+      side: Side.Sell,
+      price: 1n,
+      qty: 1n,
+      instrumentId: 0,
+    });
+    expect(buf[2]).toBe(0);
+  });
+});
+
+describe('encodeDfbaClear', () => {
+  it('emits disc 5 + u64 max cap + zero orders', () => {
+    const buf = encodeDfbaClear();
+    expect(buf.length).toBe(11);
+    expect(buf[0]).toBe(MATCHER_INSTRUCTION.DfbaClear);
+    const view = new DataView(buf.buffer);
+    expect(view.getBigUint64(1, true)).toBe(0xffffffffffffffffn);
+    expect(view.getUint16(9, true)).toBe(0);
+  });
+});
+
+describe('encodePlaceResting', () => {
+  it('emits 54-byte matcher place wire', () => {
+    const user = new Uint8Array(32).fill(7);
+    const buf = encodePlaceResting(user, Side.Buy, true, 99n, 5n, 2, true);
+    expect(buf.length).toBe(54);
+    expect(buf[0]).toBe(MATCHER_INSTRUCTION.PlaceResting);
+    expect(buf[1]).toBe(7);
+    expect(buf[33]).toBe(Side.Buy);
+    expect(buf[34]).toBe(1);
+    expect(buf[53]).toBe(1);
   });
 });
 

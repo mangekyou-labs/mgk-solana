@@ -50,6 +50,12 @@ export function encodeBatch(state: BatchState): Uint8Array {
   writeU128(view, 80, state.totalNotional);
   writeU128(view, 96, state.slashedDeposits);
   view.setUint8(112, state.bump);
+  view.setBigInt64(120, state.bidClearingPrice ?? 0n, true);
+  view.setBigInt64(128, state.askClearingPrice ?? 0n, true);
+  view.setBigUint64(136, state.matchedBidQty ?? 0n, true);
+  view.setBigUint64(144, state.matchedAskQty ?? 0n, true);
+  view.setUint8(152, state.markValid ? 1 : 0);
+  view.setUint8(153, state.liqPaused ? 1 : 0);
   return buf;
 }
 

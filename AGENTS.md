@@ -26,7 +26,7 @@ cargo build --lib --all                                 # Native lib build (also
 There is no IDL, no Anchor macros, no `anchor-spl`. Programs use raw `process_instruction` entrypoints with `pinocchio::entrypoint!()`.
 
 ### Two-layer instruction pattern (every program)
-1. `entrypoint.rs` — raw byte deserialization, account validation (using `percolator-common` helpers), then delegates
+1. `entrypoint.rs` — raw byte deserialization, account validation (using `mgk-common` helpers), then delegates
 2. `instructions/*.rs` — pure business logic on already-validated types
 
 Account validation helpers live in `programs/common/src/`: `validate_owner`, `validate_writable`, `validate_signer`, `borrow_account_data`, `borrow_account_data_mut`.
@@ -49,8 +49,8 @@ Tests are inline in `#[cfg(test)] mod tests` blocks within instruction/state sou
 ```sh
 cargo test -p mgk-perps-matcher      # 59 tests
 cargo test -p mgk-perps-core         # 19 tests
-cargo test -p percolator-oracle      # 5 tests
-cargo test -p percolator-common      # 42 tests
+cargo test -p mgk-oracle           # 5 tests
+cargo test -p mgk-common           # 42 tests
 ```
 
 ## SBF build quirks
@@ -61,7 +61,7 @@ cargo test -p percolator-common      # 42 tests
 
 ## Error codes
 
-Shared `PercolatorError` enum in `programs/common/src/error.rs` with ranges:
+Shared `MgkError` enum in `programs/common/src/error.rs` with ranges:
 - 0–99: common
 
-Errors are cast to `u64` via `From<PercolatorError> for u64` and returned by entrypoints.
+Errors are cast to `u64` via `From<MgkError> for u64` and returned by entrypoints.

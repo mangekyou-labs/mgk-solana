@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activeBatchIdFromCounter,
-  commitOrderAccountCount,
+  postOrderAccountCount,
   decodeProgramError,
 } from './useOrderSubmission';
 
@@ -102,17 +102,17 @@ describe('G12 — decodeProgramError', () => {
   });
 });
 
-describe('devnet commit-order account construction', () => {
+describe('devnet PostOrder account construction', () => {
   it('uses the last created batch as the active batch', () => {
     expect(activeBatchIdFromCounter(1n)).toBe(0n);
     expect(activeBatchIdFromCounter(42n)).toBe(41n);
   });
 
-  it('rejects commit when no batch has been created', () => {
+  it('rejects post when no batch has been created', () => {
     expect(() => activeBatchIdFromCounter(0n)).toThrow(/No active batch/i);
   });
 
-  it('includes the system program account for program-created commitment PDAs', () => {
-    expect(commitOrderAccountCount()).toBe(6);
+  it('includes six PostOrder accounts including the user signer', () => {
+    expect(postOrderAccountCount()).toBe(6);
   });
 });

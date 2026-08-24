@@ -13,7 +13,7 @@ import { useBatchPolling } from '@/lib/stores/useBatchStore';
 import { useSlotPolling } from '@/lib/stores/useSlotPolling';
 import { useDevtools } from '@/lib/hooks/useDevtools';
 import { config } from '@/lib/config';
-import { resolveBatchAddress, resolveRegistryAddress } from '@/lib/onchainAccounts';
+import { resolveRegistryAddress } from '@/lib/onchainAccounts';
 import {
   PHASE_LABEL,
   PHASE_TONE,
@@ -50,16 +50,15 @@ export function BatchTimeline() {
     setCranking(true);
     setCrankError(null);
     try {
-      const batchPda = await resolveBatchAddress({
-        batchId: currentBatchId,
-        programId: config.coreProgramId,
-        batchAddress: config.batchAddress,
-      });
+      // DFBA: batches are PDAs (or config override). Prefer configured address.
+      const batchPda =
+        config.batchAddress ??
+        sdk.deriveBatchPda(currentBatchId, config.coreProgramId)[0];
       const registryPda = resolveRegistryAddress(config.coreProgramId);
+      // CloseCollecting (disc 6): [writable] batch, [] registry
       const ix = new TransactionInstruction({
         programId: config.coreProgramId,
         keys: [
-          { pubkey: publicKey, isSigner: true, isWritable: true },
           { pubkey: batchPda, isSigner: false, isWritable: true },
           { pubkey: registryPda, isSigner: false, isWritable: false },
         ],

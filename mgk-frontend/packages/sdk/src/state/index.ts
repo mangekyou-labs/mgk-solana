@@ -28,7 +28,13 @@ export type {
   RestingOrder,
   RegistryState,
 } from './types.js';
-export { decodeBatch } from './batch.js';
+export {
+  decodeBatch,
+  decodeDfbaResultsHeader,
+  DFBA_RESULTS_HEADER_SIZE,
+  DFBA_FILL_SIZE,
+} from './batch.js';
+export type { DfbaClearResult } from './batch.js';
 export { decodeCommitment, decodeRevealedOrder } from './commitment.js';
 export { decodePortfolio, decodePosition } from './portfolio.js';
 export { decodeBookHeader, decodeRestingOrder, decodeRestingOrders } from './book.js';

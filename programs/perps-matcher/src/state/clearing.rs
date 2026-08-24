@@ -6,17 +6,17 @@ pub const MAX_ORDERS: usize = 64;
 
 /// Internal scratch types for `compute_clearing_into`.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct BuyEntry {
-    pub(crate) idx: usize,
-    pub(crate) price: i64,
-    pub(crate) qty: u64,
+pub struct BuyEntry {
+    pub idx: usize,
+    pub price: i64,
+    pub qty: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SellEntry {
-    pub(crate) idx: usize,
-    pub(crate) price: i64,
-    pub(crate) qty: u64,
+pub struct SellEntry {
+    pub idx: usize,
+    pub price: i64,
+    pub qty: u64,
 }
 
 /// Compute the uniform clearing price and fill allocations.
@@ -221,6 +221,7 @@ fn cum_qty_below(sells: &[SellEntry], price: i64) -> u64 {
 
 // Fill allocation
 
+#[allow(dead_code)]
 fn allocate_fills(
     orders: &[LimitOrder],
     buys: &[BuyEntry],
@@ -297,6 +298,7 @@ fn allocate_fills(
 /// Takes scratch arrays as parameters so the caller can place them in
 /// BSS (static storage) instead of on the stack. The `buys`/`sells`
 /// slice parameters are borrowed from `compute_clearing_into`'s scratch arrays.
+#[allow(clippy::too_many_arguments)]
 fn allocate_fills_into(
     orders: &[LimitOrder],
     buys: &[BuyEntry],
@@ -371,6 +373,7 @@ fn allocate_fills_into(
 /// Returns `(clearing_price, fill_count)`. The caller provides the
 /// `fills` buffer which is written in place.
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 pub fn compute_clearing_into(
     orders: &[LimitOrder],
     max_orders: usize,
@@ -488,6 +491,7 @@ pub fn compute_clearing_into(
 
 /// Pro-rata fill allocation with remainder distribution.
 /// Handles rounding so total filled_qty == fill_total exactly.
+#[allow(clippy::too_many_arguments)]
 fn pro_rata_fill<T: FillEntry>(
     orders: &[LimitOrder],
     entries: &[T],
@@ -594,6 +598,7 @@ mod tests {
             qty,
             reduce_only: false,
             cancel_order_id: 0,
+            is_maker: false,
         }
     }
 

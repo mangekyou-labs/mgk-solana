@@ -36,7 +36,7 @@ describe('ChartToolbar', () => {
   });
 
   it('does not render view mode buttons when onViewModeChange is omitted', () => {
-    const { onViewModeChange: _, ...rest } = defaultProps;
+    const { onViewModeChange: _, ...rest } = defaultProps; // eslint-disable-line @typescript-eslint/no-unused-vars
     render(<ChartToolbar {...rest} />);
     expect(screen.queryByTestId('vm-chart')).toBeNull();
     expect(screen.queryByTestId('vm-market-info')).toBeNull();

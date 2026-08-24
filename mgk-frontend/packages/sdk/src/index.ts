@@ -23,7 +23,16 @@ export {
   deriveVaultPda,
 } from './pda.js';
 export * as state from './state/index.js';
-export { decodeBatch, BATCH_SIZE, COMMITMENT_SIZE, REGISTRY_SIZE } from './state/index.js';
+export {
+  decodeBatch,
+  decodeDfbaResultsHeader,
+  BATCH_SIZE,
+  COMMITMENT_SIZE,
+  REGISTRY_SIZE,
+  DFBA_RESULTS_HEADER_SIZE,
+  DFBA_FILL_SIZE,
+} from './state/index.js';
+export type { DfbaClearResult } from './state/index.js';
 export * as programs from './programs/index.js';
 
 export {

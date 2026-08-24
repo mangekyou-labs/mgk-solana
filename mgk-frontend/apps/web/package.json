@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:wallet": "playwright test e2e/wallet-flow.spec.ts --project=chromium --workers=1"
   },
   "dependencies": {
     "@mgk/sdk": "workspace:*",

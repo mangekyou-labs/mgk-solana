@@ -69,6 +69,7 @@ describe('TradingViewWidget', () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    document.querySelectorAll('script[data-tv-script]').forEach((el) => el.remove());
     Object.defineProperty(window, 'TradingView', {
       value: undefined,
       writable: true,
@@ -166,5 +167,84 @@ describe('TradingViewWidget', () => {
     rerender(<TradingViewWidget symbol="BINANCE:ETHUSDT" interval="60" />);
     await waitFor(() => expect(chart.setSymbol).toHaveBeenLastCalledWith('BINANCE:ETHUSDT'));
     await waitFor(() => expect(chart.setResolution).toHaveBeenLastCalledWith('60'));
+  });
+
+  function captureTvScripts() {
+    const scripts: HTMLScriptElement[] = [];
+    const orig = document.head.appendChild.bind(document.head);
+    vi.spyOn(document.head, 'appendChild').mockImplementation((node) => {
+      if (node instanceof HTMLScriptElement && node.src.includes('tv.js')) {
+        scripts.push(node);
+        return node;
+      }
+      return orig(node);
+    });
+    return scripts;
+  }
+
+  it('shows a loading affordance while the TradingView script is pending', () => {
+    captureTvScripts();
+    const { getByTestId, queryByTestId } = render(<TradingViewWidget />);
+    expect(getByTestId('tradingview-loading')).toBeInTheDocument();
+    expect(queryByTestId('tradingview-error')).not.toBeInTheDocument();
+    expect(queryByTestId('tradingview-retry')).not.toBeInTheDocument();
+  });
+
+  it('hides loading after the widget is constructed', async () => {
+    const scripts = captureTvScripts();
+    const { queryByTestId, getByTestId } = render(<TradingViewWidget />);
+    expect(getByTestId('tradingview-loading')).toBeInTheDocument();
+
+    installMockTradingView();
+    await act(async () => {
+      scripts[0]?.onload?.(new Event('load'));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(queryByTestId('tradingview-loading')).not.toBeInTheDocument();
+    });
+  });
+
+  it('shows an error and retry control when the script fails to load', async () => {
+    const scripts = captureTvScripts();
+    const { getByTestId, queryByTestId } = render(<TradingViewWidget />);
+
+    await act(async () => {
+      scripts[0]?.onerror?.(new Event('error'));
+      await Promise.resolve();
+    });
+
+    expect(getByTestId('tradingview-error')).toBeInTheDocument();
+    expect(getByTestId('tradingview-retry')).toBeInTheDocument();
+    expect(queryByTestId('tradingview-loading')).not.toBeInTheDocument();
+  });
+
+  it('retries script load when the retry control is clicked', async () => {
+    const scripts = captureTvScripts();
+    const { getByTestId, queryByTestId } = render(<TradingViewWidget />);
+
+    await act(async () => {
+      scripts[0]?.onerror?.(new Event('error'));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      getByTestId('tradingview-retry').click();
+    });
+
+    expect(getByTestId('tradingview-loading')).toBeInTheDocument();
+    expect(scripts.length).toBeGreaterThanOrEqual(2);
+
+    installMockTradingView();
+    await act(async () => {
+      scripts.at(-1)?.onload?.(new Event('load'));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(queryByTestId('tradingview-error')).not.toBeInTheDocument();
+      expect(queryByTestId('tradingview-loading')).not.toBeInTheDocument();
+    });
   });
 });

@@ -1,5 +1,5 @@
 use crate::state::{Portfolio, Vault};
-use percolator_common::PercolatorError;
+use mgk_common::MgkError;
 use pinocchio::{
     account_info::AccountInfo,
     instruction::{AccountMeta, Instruction},
@@ -19,17 +19,17 @@ pub fn process_deposit(
 ) -> ProgramResult {
     if amount == 0 {
         msg!("Error: Deposit amount must be greater than zero");
-        return Err(PercolatorError::InvalidQuantity.into());
+        return Err(MgkError::InvalidQuantity.into());
     }
 
     if !user_account.is_signer() {
         msg!("Error: User must be a signer");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     if portfolio.user != *user_account.key() {
         msg!("Error: Portfolio does not belong to user");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     // CPI to System Program: transfer SOL from user to vault
@@ -65,10 +65,10 @@ pub fn process_deposit(
     let amount_i128 = amount as i128;
     portfolio.principal = portfolio.principal
         .checked_add(amount_i128)
-        .ok_or(PercolatorError::Overflow)?;
+        .ok_or(MgkError::Overflow)?;
     portfolio.equity = portfolio.equity
         .checked_add(amount_i128)
-        .ok_or(PercolatorError::Overflow)?;
+        .ok_or(MgkError::Overflow)?;
     portfolio.recalc_margin();
 
     msg!("Deposit successful");

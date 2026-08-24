@@ -9,6 +9,7 @@ import {
   OrderType,
   decodeBatch,
   decodeCommitment,
+  decodeDfbaResultsHeader,
   decodePortfolio,
   decodeRevealedOrder,
 } from './index.js';
@@ -35,7 +36,7 @@ function sampleBatchState(): BatchState {
     commitDeadlineSlot: 100_000n,
     revealDeadlineSlot: 100_100n,
     closeSlot: 100_200n,
-    shuffleSeed: 100_300n,
+    shuffleSeed: 0n,
     clearingPrice: 150_000_000n,
     totalCommitments: 7,
     totalRevealed: 6,
@@ -44,6 +45,12 @@ function sampleBatchState(): BatchState {
     totalNotional: 1_481_481_481_500n,
     slashedDeposits: 123_456_789n,
     bump: 254,
+    bidClearingPrice: 149_000_000n,
+    askClearingPrice: 151_000_000n,
+    matchedBidQty: 100n,
+    matchedAskQty: 100n,
+    markValid: true,
+    liqPaused: false,
   };
 }
 
@@ -116,6 +123,12 @@ describe('decodeBatch', () => {
     expect(decoded.totalNotional).toBe(original.totalNotional);
     expect(decoded.slashedDeposits).toBe(original.slashedDeposits);
     expect(decoded.bump).toBe(original.bump);
+    expect(decoded.bidClearingPrice).toBe(original.bidClearingPrice);
+    expect(decoded.askClearingPrice).toBe(original.askClearingPrice);
+    expect(decoded.matchedBidQty).toBe(original.matchedBidQty);
+    expect(decoded.matchedAskQty).toBe(original.matchedAskQty);
+    expect(decoded.markValid).toBe(true);
+    expect(decoded.liqPaused).toBe(false);
   });
 
   it('throws when buffer is too small', () => {
@@ -126,6 +139,24 @@ describe('decodeBatch', () => {
     const s = { ...sampleBatchState(), clearingPrice: -1n };
     const decoded = decodeBatch(encodeBatch(s));
     expect(decoded.clearingPrice).toBe(-1n);
+  });
+});
+
+describe('decodeDfbaResultsHeader', () => {
+  it('decodes dual clear header', () => {
+    const buf = new Uint8Array(34);
+    const view = new DataView(buf.buffer);
+    view.setBigInt64(0, 100n, true);
+    view.setBigInt64(8, 110n, true);
+    view.setBigUint64(16, 50n, true);
+    view.setBigUint64(24, 40n, true);
+    view.setUint16(32, 3, true);
+    const r = decodeDfbaResultsHeader(buf);
+    expect(r.bidClearingPrice).toBe(100n);
+    expect(r.askClearingPrice).toBe(110n);
+    expect(r.matchedBidQty).toBe(50n);
+    expect(r.matchedAskQty).toBe(40n);
+    expect(r.numFills).toBe(3);
   });
 });
 

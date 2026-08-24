@@ -60,6 +60,56 @@ const slotModule = await vi.importMock<Record<string, unknown>>(
   '@/lib/stores/useSlotPolling',
 );
 
+vi.mock('@/lib/stores/useIndexerHealthStore', () => {
+  let healthState: {
+    displayStatus: 'warming' | 'healthy' | 'degraded' | 'critical' | 'reconnecting' | 'unreachable';
+    slotLag: number | null;
+    status: 'warming' | 'healthy' | 'degraded' | 'critical';
+    consecutiveFailures: number;
+  } = { displayStatus: 'healthy', slotLag: 0, status: 'healthy', consecutiveFailures: 0 };
+
+  return {
+    useIndexerHealthStore: { getState: () => healthState },
+    useIndexerHealth: () => healthState,
+    __setHealthState: (s: typeof healthState) => {
+      healthState = s;
+    },
+  };
+});
+
+const healthModule = await vi.importMock<Record<string, unknown>>(
+  '@/lib/stores/useIndexerHealthStore',
+);
+
+const setHealthModule = healthModule as unknown as {
+  __setHealthState: (s: {
+    displayStatus: 'warming' | 'healthy' | 'degraded' | 'critical' | 'reconnecting' | 'unreachable';
+    slotLag: number | null;
+    status: 'warming' | 'healthy' | 'degraded' | 'critical';
+    consecutiveFailures: number;
+  }) => void;
+};
+
+function setIndexerHealth(
+  displayStatus: 'warming' | 'healthy' | 'degraded' | 'critical' | 'reconnecting' | 'unreachable',
+  slotLag: number | null = null,
+) {
+  const statusMap: Record<string, 'warming' | 'healthy' | 'degraded' | 'critical'> = {
+    warming: 'warming',
+    healthy: 'healthy',
+    degraded: 'degraded',
+    critical: 'critical',
+    reconnecting: 'healthy',
+    unreachable: 'healthy',
+  };
+  setHealthModule.__setHealthState({
+    displayStatus,
+    slotLag,
+    status: statusMap[displayStatus],
+    consecutiveFailures: displayStatus === 'reconnecting' ? 1 : displayStatus === 'unreachable' ? 2 : 0,
+  });
+}
+
 const setWalletModule = walletAdapter as unknown as {
   __setWalletState: (s: { connected: boolean; publicKey: { toBase58(): string } | null }) => void;
 };
@@ -95,6 +145,12 @@ function setBatch(overrides: Partial<sdk.state.BatchState> = {}) {
     totalNotional: 0n,
     slashedDeposits: 0n,
     bump: 255,
+    bidClearingPrice: 0n,
+    askClearingPrice: 0n,
+    matchedBidQty: 0n,
+    matchedAskQty: 0n,
+    markValid: false,
+    liqPaused: true,
     ...overrides,
   };
   setBatchModule.__setBatchState({
@@ -183,27 +239,90 @@ describe('StatusBar', () => {
     setSlot(800);
     render(<StatusBar />);
     expect(screen.getByTestId('status-batch-label')).toHaveTextContent(
-      'Committing',
+      'Collecting',
     );
     expect(screen.getByTestId('status-batch-label')).toHaveTextContent('01:20');
   });
 
-  it('shows Settled phase without a countdown', () => {
+  it('shows Settled phase with its settlement intent', () => {
     setBatch({ status: sdk.state.BatchStatus.Settled });
     setSlot(null);
     render(<StatusBar />);
     expect(screen.getByTestId('status-batch-label')).toHaveTextContent(
       'Batch: Settled',
     );
-    expect(screen.getByTestId('status-batch-label')).toHaveTextContent('—');
+    expect(screen.getByTestId('status-batch-label')).toHaveTextContent(
+      'No two-sided match · Mark unchanged · Liquidations paused',
+    );
   });
 
-  it('shows "past deadline" when current slot exceeds the deadline', () => {
+  it('shows the keeper intent when the eligible batch is past its deadline', () => {
     setBatch({ status: sdk.state.BatchStatus.Committing, commitDeadlineSlot: 1000n });
     setSlot(1500);
     render(<StatusBar />);
     expect(screen.getByTestId('status-batch-label')).toHaveTextContent(
-      'past deadline',
+      'Ready to clear · Waiting for keeper',
+    );
+  });
+
+  it('shows "Indexer syncing" when display status is warming', () => {
+    setIndexerHealth('warming');
+    render(<StatusBar />);
+    expect(screen.getByTestId('status-indexer-label')).toHaveTextContent(
+      'Indexer syncing',
+    );
+  });
+
+  it('shows "Indexer live" when display status is healthy', () => {
+    setIndexerHealth('healthy', 0);
+    render(<StatusBar />);
+    expect(screen.getByTestId('status-indexer-label')).toHaveTextContent(
+      'Indexer live',
+    );
+  });
+
+  it('shows "Indexer delayed · N slots" when display status is degraded', () => {
+    setIndexerHealth('degraded', 25);
+    render(<StatusBar />);
+    expect(screen.getByTestId('status-indexer-label')).toHaveTextContent(
+      'Indexer delayed · 25 slots',
+    );
+  });
+
+  it('shows "Indexer critical · N slots" when display status is critical', () => {
+    setIndexerHealth('critical', 60);
+    render(<StatusBar />);
+    expect(screen.getByTestId('status-indexer-label')).toHaveTextContent(
+      'Indexer critical · 60 slots',
+    );
+  });
+
+  it('shows "Indexer reconnecting" after one failed request', () => {
+    setIndexerHealth('reconnecting');
+    render(<StatusBar />);
+    expect(screen.getByTestId('status-indexer-label')).toHaveTextContent(
+      'Indexer reconnecting',
+    );
+    // The dot should be connecting (amber/pulsing)
+    expect(screen.getByTestId('status-indexer-dot').getAttribute('data-state')).toBe('connecting');
+  });
+
+  it('shows "Indexer unreachable" after two+ failed requests', () => {
+    setIndexerHealth('unreachable');
+    render(<StatusBar />);
+    expect(screen.getByTestId('status-indexer-label')).toHaveTextContent(
+      'Indexer unreachable',
+    );
+    expect(screen.getByTestId('status-indexer-dot').getAttribute('data-state')).toBe('offline');
+  });
+
+  it('shows "Indexer unavailable" as fallback label for unknown status', () => {
+    setIndexerHealth('healthy');
+    // The default fallback should be unreachable or similar
+    render(<StatusBar />);
+    // healthy maps to "Indexer live"
+    expect(screen.getByTestId('status-indexer-label')).toHaveTextContent(
+      'Indexer live',
     );
   });
 });

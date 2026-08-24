@@ -11,14 +11,12 @@ const WALLET_KEY = 'mgk-order-form-wallet';
 /**
  * Wallet-switch guard for the order form store.
  *
- * Three behaviours (G8 + G12 in the planning doc):
- *  1. **Wallet disconnects** while a commit-reveal is in flight
- *     (`committing` / `awaiting_reveal` / `revealing`) — clear the store
- *     so a reconnect starts fresh.
- *  2. **Wallet switches to a different account** while `awaiting_reveal`
- *     — clear the store. The new wallet should not inherit the old
- *     wallet's in-flight commit (salt + batch_id are wallet-scoped).
- *  3. **Stale `awaiting_reveal` from a prior session** — on mount, if the
+ * Three behaviours:
+ *  1. **Wallet disconnects** while a PostOrder is in flight (`submitting`)
+ *     — clear the store so a reconnect starts fresh.
+ *  2. **Wallet switches to a different account** while submitting — clear
+ *     the store. The new wallet should not inherit the old in-flight order.
+ *  3. **Stale persisted wallet from a prior session** — on mount, if the
  *     persisted wallet pubkey doesn't match the current wallet, clear
  *     the store.
  *
@@ -38,7 +36,7 @@ export function useOrderFormWalletGuard(): void {
 
     // (1) On mount, if the persisted wallet pubkey doesn't match the
     // currently-connected wallet (or no wallet is connected), the persisted
-    // `awaiting_reveal` is from a different user — wipe it.
+    // order is from a different user — wipe it.
     if (currentKey === null) {
       if (persistedKey !== null) {
         clear();
@@ -54,14 +52,14 @@ export function useOrderFormWalletGuard(): void {
       window.localStorage.removeItem(WALLET_KEY);
     }
 
-    // (3) Wallet switched to a different pubkey while we're sitting in
-    // `awaiting_reveal` (the user closed Phantom on one account and
-    // reopened on another without going through disconnect) → clear.
+    // (3) Wallet switched to a different pubkey while a PostOrder is
+    // in flight (the user closed Phantom on one account and reopened on
+    // another without going through disconnect) → clear.
     if (
       currentKey !== null &&
       lastPubkeyRef.current !== null &&
       lastPubkeyRef.current !== currentKey &&
-      (status === 'awaiting_reveal' || status === 'committing' || status === 'revealing')
+      status === 'submitting'
     ) {
       clear();
     }

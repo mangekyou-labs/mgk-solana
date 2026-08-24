@@ -19,7 +19,7 @@ vi.mock('@solana/wallet-adapter-react', () => ({
 const PUBKEY_A = 'DdqGmK5uamYN5vmuZrzpQhKeehLdwtPLVJdhu5P2iJKC';
 const PUBKEY_B = 'CVDFLCAjXhVWiPXH9nTCTpCgVzmDVoiPzNJYuccr1dqB';
 
-function setStoreAwaitingReveal(publicKey: string) {
+function setStoreSubmitting(publicKey: string) {
   useOrderFormStore.setState({
     instrumentId: 0,
     side: 'buy',
@@ -29,7 +29,7 @@ function setStoreAwaitingReveal(publicKey: string) {
     batchId: 5n,
     salt: 12345n,
     hash: 'abc',
-    status: 'awaiting_reveal',
+    status: 'submitting',
   });
   // Persist the wallet key alongside so the guard sees a matching pair
   if (typeof window !== 'undefined') {
@@ -76,9 +76,9 @@ describe('useOrderFormWalletGuard', () => {
     expect(window.localStorage.getItem(WALLET_KEY)).toBeNull();
   });
 
-  it('clears a stale `awaiting_reveal` on mount when the wallet changed', () => {
-    setStoreAwaitingReveal(PUBKEY_A);
-    expect(useOrderFormStore.getState().status).toBe('awaiting_reveal');
+  it('clears a stale submitting order on mount when the wallet changed', () => {
+    setStoreSubmitting(PUBKEY_A);
+    expect(useOrderFormStore.getState().status).toBe('submitting');
     expect(useOrderFormStore.getState().hash).toBe('abc');
 
     // Now the user reconnects with a different wallet.
@@ -94,7 +94,7 @@ describe('useOrderFormWalletGuard', () => {
   it('clears the in-flight state when the wallet disconnects mid-flight', () => {
     mockWallet = { publicKey: { toBase58: () => PUBKEY_A }, connected: true };
     const { rerender } = renderHook(() => useOrderFormWalletGuard());
-    setStoreAwaitingReveal(PUBKEY_A);
+    setStoreSubmitting(PUBKEY_A);
 
     act(() => {
       mockWallet = { publicKey: null, connected: false };
@@ -107,10 +107,10 @@ describe('useOrderFormWalletGuard', () => {
     expect(window.localStorage.getItem(WALLET_KEY)).toBeNull();
   });
 
-  it('clears the in-flight state when the wallet switches while awaiting_reveal', () => {
+  it('clears the in-flight state when the wallet switches while submitting', () => {
     mockWallet = { publicKey: { toBase58: () => PUBKEY_A }, connected: true };
     const { rerender } = renderHook(() => useOrderFormWalletGuard());
-    setStoreAwaitingReveal(PUBKEY_A);
+    setStoreSubmitting(PUBKEY_A);
 
     act(() => {
       mockWallet = { publicKey: { toBase58: () => PUBKEY_B }, connected: true };
@@ -125,14 +125,14 @@ describe('useOrderFormWalletGuard', () => {
   it('does NOT clear the state on a no-op re-render with the same wallet', () => {
     mockWallet = { publicKey: { toBase58: () => PUBKEY_A }, connected: true };
     const { rerender } = renderHook(() => useOrderFormWalletGuard());
-    setStoreAwaitingReveal(PUBKEY_A);
+    setStoreSubmitting(PUBKEY_A);
 
     act(() => {
       rerender();
     });
 
     const s = useOrderFormStore.getState();
-    expect(s.status).toBe('awaiting_reveal');
+    expect(s.status).toBe('submitting');
     expect(s.hash).toBe('abc');
   });
 });

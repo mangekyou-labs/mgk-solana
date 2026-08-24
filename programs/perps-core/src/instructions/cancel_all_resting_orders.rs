@@ -1,5 +1,5 @@
 use crate::state::Portfolio;
-use percolator_common::{PercolatorError, validate_owner, validate_writable};
+use mgk_common::{MgkError, validate_owner, validate_writable};
 use pinocchio::{
     account_info::AccountInfo,
     instruction::{AccountMeta, Instruction},
@@ -43,7 +43,7 @@ pub fn process_cancel_all_resting_orders(
 ) -> ProgramResult {
     if !user_account.is_signer() {
         msg!("Error: User must be signer");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     validate_owner(portfolio_account, program_id)?;
@@ -57,12 +57,12 @@ pub fn process_cancel_all_resting_orders(
     };
     if portfolio.user != *user_account.key() {
         msg!("Error: Portfolio does not belong to user");
-        return Err(PercolatorError::Unauthorized.into());
+        return Err(MgkError::Unauthorized.into());
     }
 
     if book_accounts.len() > MAX_BOOKS_PER_CALL {
         msg!("Error: Too many book accounts");
-        return Err(PercolatorError::InvalidInstruction.into());
+        return Err(MgkError::InvalidInstruction.into());
     }
 
     // Build the CPI data once — same user for every book.

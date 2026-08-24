@@ -4,13 +4,13 @@ import { Logo } from '@/components/common/Logo';
 
 export const metadata: Metadata = {
   title: 'mgk — On-chain perpetual futures',
-  description: 'On-chain perps with commit-reveal CLOB. Fair ordering, SOL-PERP on devnet.',
+  description: 'On-chain perps with dual-flow batch auctions (DFBA). Fair uniform prices, SOL-PERP on devnet.',
 };
 
 const STEPS = [
   { step: '1', title: 'Connect Wallet', desc: 'Phantom, Solflare, or Backpack. One click.' },
   { step: '2', title: 'Deposit SOL', desc: 'Fund your portfolio with devnet SOL from the faucet.' },
-  { step: '3', title: 'Place Limit Orders', desc: 'Commit-reveal batch auctions. Fair ordering, no MEV.' },
+  { step: '3', title: 'Post Orders', desc: 'DFBA dual auctions. One fair clearing price per side, no MEV.' },
 ] as const;
 
 export default function LandingPage() {
@@ -24,8 +24,9 @@ export default function LandingPage() {
         </h1>
 
         <p className="text-text-muted text-sm leading-relaxed">
-          SOL-PERP on devnet. Commit-reveal CLOB with deterministic shuffle
-          and structural priority queues. No mempool front-running.
+          SOL-PERP on devnet. Dual-flow batch auctions (DFBA): post orders into
+          a collection window, then uniform-price clears on both sides.
+          No mempool front-running.
         </p>
 
         <Link

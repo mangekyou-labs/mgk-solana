@@ -27,6 +27,10 @@ export interface DecodedFill {
 /** Bytes per fill in the CLOB matching results account */
 const BYTES_PER_FILL = 49;
 
+/** Bytes in the live DFBA results header and each dual-auction fill. */
+const DFBA_HEADER_BYTES = sdk.DFBA_RESULTS_HEADER_SIZE;
+const DFBA_BYTES_PER_FILL = sdk.DFBA_FILL_SIZE;
+
 /**
  * Decode fills from a CLOB matching results account written by the
  * matcher's `write_clob_results` function.
@@ -64,6 +68,61 @@ export function decodeFills(
 
     const price = notional / qty;
 
+    fills.push({
+      slot,
+      batchId,
+      instrumentId,
+      takerSide,
+      price,
+      qty,
+      takerPubkey: user,
+      makerPubkey: Uint8Array.from(user),
+      txSignature,
+      isMaker,
+    });
+  }
+
+  return fills;
+}
+
+/**
+ * Decode the live dual-auction results account written by `DfbaClear`.
+ *
+ * Layout: bid_price(i64) + ask_price(i64) + matched_bid(u64) +
+ * matched_ask(u64) + num_fills(u16), followed by N×58-byte records.
+ * Each record is user(32) + reserved(8) + qty(u64) + price(i64) +
+ * is_maker(u8) + auction(u8), where auction 0 is the bid auction and 1 is
+ * the ask auction. The results account stores one user/role record at a time,
+ * so the user is retained in both pubkey columns for the existing index schema;
+ * `isMaker` identifies which side of that record the user occupied.
+ */
+export function decodeDfbaFills(
+  data: Uint8Array,
+  slot: number,
+  batchId: bigint,
+  instrumentId: number,
+  txSignature: string,
+): DecodedFill[] {
+  if (data.length < DFBA_HEADER_BYTES) return [];
+
+  const view = new DataView(data.buffer, data.byteOffset, data.length);
+  const numFills = view.getUint16(32, true);
+  const requiredBytes = DFBA_HEADER_BYTES + numFills * DFBA_BYTES_PER_FILL;
+  if (requiredBytes > data.length) return [];
+
+  const fills: DecodedFill[] = [];
+  for (let i = 0; i < numFills; i++) {
+    const offset = DFBA_HEADER_BYTES + i * DFBA_BYTES_PER_FILL;
+    const user = data.slice(offset, offset + 32);
+    const qty = view.getBigUint64(offset + 40, true);
+    const price = view.getBigInt64(offset + 48, true);
+    const isMaker = view.getUint8(offset + 56) !== 0;
+    const auction = view.getUint8(offset + 57);
+
+    if (qty === 0n || (auction !== 0 && auction !== 1)) continue;
+
+    // Bid auction: taker sells. Ask auction: taker buys.
+    const takerSide = auction === 0 ? 1 : 0;
     fills.push({
       slot,
       batchId,

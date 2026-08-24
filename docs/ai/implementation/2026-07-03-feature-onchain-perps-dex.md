@@ -7,7 +7,14 @@ status: complete
 
 # mgk On-Chain Perps DEX — Check Implementation Report (2026-07-03)
 
-> **Check Implementation (Phase 7) output.** Compares `programs/*` against `docs/ai/design/feature-onchain-perps-dex.md` and `docs/ai/requirements/2026-06-18-feature-onchain-perps-dex.md` (as amended 2026-07-03 by the Short-Batch Decision).
+> **Historical.** This file is the 2026-07-03 short-batch **commit-reveal** check.
+> Active DFBA matching superseded it on 2026-08-02. Phase 7 DFBA alignment
+> (2026-08-20) lives in
+> `docs/ai/implementation/2026-08-02-feature-onchain-perps-dex-dfba.md`
+> (section “Check Implementation”). Do not implement new commit-reveal work
+> from this report.
+
+> **Check Implementation (Phase 7) output (2026-07-03).** Compares `programs/*` against `docs/ai/design/feature-onchain-perps-dex.md` and `docs/ai/requirements/2026-06-18-feature-onchain-perps-dex.md` (as amended 2026-07-03 by the Short-Batch Decision).
 >
 > **Scope delta vs. 2026-07-01 report:** The requirements doc was amended 2026-07-03 to (a) shrink commit-reveal batch windows from 30–60s to ~2–4s p50, (b) downgrade the MEV claim from "resistant" to "mitigated," (c) add a pre-signed reveal relayer persona + success criterion #13, (d) add short-batch latency success criterion #12, and (e) add open items #9–14. This report re-verifies on-chain alignment under the amended requirements and reviews the uncommitted on-chain diff (20 files, +1216/−431).
 

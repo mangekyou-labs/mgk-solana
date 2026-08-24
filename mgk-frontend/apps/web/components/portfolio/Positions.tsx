@@ -63,7 +63,7 @@ export function Positions({
   loading,
   className,
 }: PositionsProps) {
-  if (loading) {
+  if (loading && !data) {
     return (
       <section
         data-testid="positions"
@@ -103,6 +103,7 @@ export function Positions({
     <section
       data-testid="positions"
       data-state="ready"
+      data-refreshing={loading ? 'true' : 'false'}
       className={['rounded-md border border-border bg-surface-1', className ?? '']
         .filter(Boolean)
         .join(' ')}
