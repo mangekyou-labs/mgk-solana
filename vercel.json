@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "cd mgk-frontend && pnpm -F @mgk/sdk build && pnpm -F web build",
-  "installCommand": "cd mgk-frontend && pnpm install --filter web --filter @mgk/sdk --ignore-scripts",
+  "installCommand": "cd mgk-frontend && pnpm install --filter web --filter @mgk/sdk --ignore-scripts && cd .. && ln -sfn mgk-frontend/node_modules node_modules",
   "framework": "nextjs",
   "regions": ["iad1"],
   "outputDirectory": "mgk-frontend/apps/web/.next"
