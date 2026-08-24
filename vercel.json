@@ -1,19 +1,8 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "cd mgk-frontend && pnpm -F @mgk/sdk build && pnpm -F web build",
   "installCommand": "cd mgk-frontend && pnpm install --filter web --filter @mgk/sdk --ignore-scripts",
   "framework": "nextjs",
   "regions": ["iad1"],
-  "outputDirectory": "mgk-frontend/apps/web/.next",
-  "engines": {
-    "node": "22.x"
-  },
-  "env": {
-    "NEXT_PUBLIC_CORE_PROGRAM_ID": "C7w2mKz2KQgDroNNhACm9MutXhPiesVr9Gn2x8TDsRYx",
-    "NEXT_PUBLIC_MATCHER_PROGRAM_ID": "7WiZuunbPGciCedsVTguvjezwwzrhmXG5HkdCuHizbNC",
-    "NEXT_PUBLIC_ORACLE_PROGRAM_ID": "CsSqVZMoXixNYstNhTtixeT4pyRgrYnXdpfoXQBgFPqZ",
-    "NEXT_PUBLIC_REGISTRY_ADDRESS": "CbsfrRS2rYE2qgJbi7MM6mLzARUy8cDiYmHW2o12jYJA",
-    "NEXT_PUBLIC_VAULT_ADDRESS": "9qe7TkRxDXHo3dywPKiiY1jwSBnFuSPHmGTWhcP8ttXE",
-    "NEXT_PUBLIC_BOOK_ADDRESS": "J33Y6yo6AZM6JKLEw89tN1kPmyEADqWWjGxb1aAW915j",
-    "NEXT_PUBLIC_RPC_URL": "https://api.devnet.solana.com"
-  }
+  "outputDirectory": "mgk-frontend/apps/web/.next"
 }

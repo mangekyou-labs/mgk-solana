@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test ops-health.test.js ops-liquidate.test.js ops-oracle.test.js set-funding-params.test.js"
+    "test": "node --test ops-health.test.js ops-liquidate.test.js ops-oracle.test.js set-funding-params.test.js vercel-json.test.js"
   },
   "keywords": [],
   "author": "",
